@@ -33,12 +33,18 @@ CREATE TABLE IF NOT EXISTS rooms (
   max_thread_messages   INTEGER NOT NULL DEFAULT 60,
   max_concurrent_runs   INTEGER NOT NULL DEFAULT 3,
   cost_cap_usd          REAL    NOT NULL DEFAULT 5.0,
+  -- How many assistants a new thread waits for by default.
+  -- 'all'   -> every assistant that can answer (grows with the room)
+  -- 'fixed' -> exactly quorum_fixed of them
+  quorum_mode           TEXT    NOT NULL DEFAULT 'all',
+  quorum_fixed          INTEGER NOT NULL DEFAULT 1,
   created_at            TEXT NOT NULL,
   UNIQUE(project_id, name)
 );
 
--- How to launch a given flavour of agent. This is what the "which assistant
--- is it" dropdown actually selects: an icon *and* a launch recipe.
+-- What flavour of agent this is. This is what the "which assistant is it"
+-- dropdown selects: a label and an icon. Agents are started by you and connect
+-- on their own, so nothing here launches anything.
 CREATE TABLE IF NOT EXISTS agent_profiles (
   id               INTEGER PRIMARY KEY,
   key              TEXT NOT NULL UNIQUE,
@@ -203,7 +209,11 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
 /// `CREATE TABLE IF NOT EXISTS` silently skips existing tables, so new columns
 /// have to be added explicitly or they only appear on a fresh install.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column, decl) in [("agents", "color", "TEXT NOT NULL DEFAULT ''")] {
+    for (table, column, decl) in [
+        ("agents", "color", "TEXT NOT NULL DEFAULT ''"),
+        ("rooms", "quorum_mode", "TEXT NOT NULL DEFAULT 'all'"),
+        ("rooms", "quorum_fixed", "INTEGER NOT NULL DEFAULT 1"),
+    ] {
         let exists: bool = conn
             .prepare(&format!(
                 "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
@@ -242,7 +252,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "claude",
             r#"["-p","{prompt}","--mcp-config","{mcp_config}","--allowed-tools","mcp__rivendell","--permission-mode","acceptEdits","--output-format","json"]"#,
             "config_file_flag",
-            "Headless Claude Code. Reads the Rivendell MCP server from a temp config file.",
+            "Anthropic's Claude Code.",
         ),
         (
             "codex",
@@ -251,7 +261,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "codex",
             r#"["exec","--skip-git-repo-check","{prompt}"]"#,
             "env",
-            "Codex reads MCP servers from ~/.codex/config.toml; the env vars RIVENDELL_URL and RIVENDELL_KEY are exported for a shim entry.",
+            "OpenAI's Codex CLI.",
         ),
         (
             "gemini-cli",
@@ -260,7 +270,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "gemini",
             r#"["-p","{prompt}"]"#,
             "env",
-            "Gemini CLI. Configure the Rivendell MCP server in ~/.gemini/settings.json using the shim.",
+            "Google's Gemini CLI.",
         ),
         (
             "cursor-agent",
@@ -269,7 +279,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "cursor-agent",
             r#"["-p","{prompt}"]"#,
             "env",
-            "Cursor's headless agent.",
+            "Cursor's agent.",
         ),
         (
             "shell",
@@ -278,7 +288,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "sh",
             r#"["-c","{prompt}"]"#,
             "env",
-            "Escape hatch: runs any command. {prompt} is the rendered brief; RIVENDELL_URL / RIVENDELL_KEY / RIVENDELL_THREAD_ID are in the environment.",
+            "Anything else — a script or a client of your own.",
         ),
         (
             "external",
@@ -287,7 +297,7 @@ fn seed_profiles(conn: &Connection) -> rusqlite::Result<()> {
             "",
             r#"[]"#,
             "none",
-            "Never spawned. Use for a long-lived session you drive yourself — it connects with its API key and long-polls.",
+            "Unspecified. Fine for any client that speaks MCP.",
         ),
     ];
 

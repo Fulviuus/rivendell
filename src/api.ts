@@ -39,7 +39,6 @@ export const api = {
     role: string;
     profileId: number | null;
     systemNote: string;
-    autoDispatch: boolean;
     color: string;
   }) => invoke<NewAgentKey>("create_agent", args),
   updateAgent: (agentId: number, patch: Record<string, unknown>) =>
@@ -47,17 +46,16 @@ export const api = {
   rotateAgentKey: (agentId: number) => invoke<NewAgentKey>("rotate_agent_key", { agentId }),
   setAgentRevoked: (agentId: number, revoked: boolean) =>
     invoke<void>("set_agent_revoked", { agentId, revoked }),
-  setAgentAutoDispatch: (agentId: number, enabled: boolean) =>
-    invoke<void>("set_agent_auto_dispatch", { agentId, enabled }),
   deleteAgent: (agentId: number) => invoke<void>("delete_agent", { agentId }),
 
   listTags: () => invoke<Tag[]>("list_tags"),
 
-  listThreads: (roomId: number | null, status?: string, tag?: string) =>
+  listThreads: (roomId: number | null, status?: string, tag?: string, sort?: string) =>
     invoke<ThreadSummary[]>("list_threads", {
       roomId,
       status: status ?? null,
       tag: tag ?? null,
+      sort: sort ?? null,
       limit: 200,
     }),
   getThread: (threadId: number) => invoke<ThreadDetail>("get_thread", { threadId }),
@@ -89,8 +87,6 @@ export const api = {
     }),
   setThreadStatus: (threadId: number, status: ThreadStatus) =>
     invoke<void>("set_thread_status", { threadId, status, asAgentId: null }),
-  dispatchThread: (threadId: number, agentIds?: number[]) =>
-    invoke<number>("dispatch_thread", { threadId, agentIds: agentIds ?? null }),
 
   search: (roomId: number | null, query: string) =>
     invoke<{ kind: string; ref_id: number; title: string; excerpt: string }[]>("search", {

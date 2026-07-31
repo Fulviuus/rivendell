@@ -7,11 +7,9 @@ pub mod fsjail;
 pub mod git;
 pub mod mcp;
 pub mod models;
-pub mod spawner;
 pub mod store;
 
 use commands::AppState;
-use spawner::Spawner;
 use std::sync::Arc;
 use store::Store;
 use tauri::{Emitter, Manager};
@@ -37,16 +35,10 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let store = Arc::new(Store::open(&dir.join("rivendell.db"))?);
 
-            // Runs marked RUNNING belong to a process that is no longer alive.
-            match store.reap_orphan_runs() {
-                Ok(n) if n > 0 => tracing::info!("reaped {n} orphaned run(s) from a previous session"),
-                _ => {}
-            }
-
-            let spawner = Arc::new(Spawner::new(store.clone()));
+            let mcp_url = Arc::new(std::sync::RwLock::new(String::new()));
             app.manage(AppState {
                 store: store.clone(),
-                spawner: spawner.clone(),
+                mcp_url: mcp_url.clone(),
             });
 
             // Bridge the event log into the webview.
@@ -68,11 +60,7 @@ pub fn run() {
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let state = mcp::server::McpState {
-                    store: store.clone(),
-                    spawner: spawner.clone(),
-                };
-                let state = Arc::new(state);
+                let state = Arc::new(mcp::server::McpState { store: store.clone() });
 
                 let mut running = None;
                 for port in PREFERRED_PORTS {
@@ -97,7 +85,9 @@ pub fn run() {
                 match running {
                     Some(r) => {
                         tracing::info!("mcp server listening on {}", r.url);
-                        spawner.set_url(r.url.clone()).await;
+                        if let Ok(mut u) = mcp_url.write() {
+                            *u = r.url.clone();
+                        }
                         let _ = handle.emit("rivendell://server", r.url);
                     }
                     None => tracing::error!("could not start the MCP server on any port"),
@@ -122,7 +112,6 @@ pub fn run() {
             commands::update_agent,
             commands::rotate_agent_key,
             commands::set_agent_revoked,
-            commands::set_agent_auto_dispatch,
             commands::delete_agent,
             commands::list_tags,
             commands::list_threads,
@@ -132,7 +121,6 @@ pub fn run() {
             commands::update_thread,
             commands::resolve_thread,
             commands::set_thread_status,
-            commands::dispatch_thread,
             commands::search,
             commands::events_since,
             commands::file_preview,

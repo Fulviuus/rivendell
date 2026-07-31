@@ -26,8 +26,10 @@ export interface Room {
   paused: boolean;
   max_replies_per_agent: number;
   max_thread_messages: number;
-  max_concurrent_runs: number;
   cost_cap_usd: number;
+  /** "all" — every assistant that can answer; "fixed" — quorum_fixed. */
+  quorum_mode: "all" | "fixed";
+  quorum_fixed: number;
   open_threads: number;
   created_at: string;
 }
@@ -55,7 +57,6 @@ export interface Agent {
   icon: string;
   color: string;
   key_preview: string | null;
-  auto_dispatch: boolean;
   system_note: string;
   created_at: string;
   revoked_at: string | null;
@@ -118,21 +119,16 @@ export interface ThreadSummary {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  last_reply_at: string | null;
 }
 
-export interface AgentRun {
-  id: number;
-  thread_id: number;
-  agent_id: number;
-  agent_name: string;
-  status: "RUNNING" | "EXITED" | "FAILED" | "KILLED";
-  pid: number | null;
-  exit_code: number | null;
-  command: string;
-  log: string;
-  started_at: string;
-  ended_at: string | null;
-}
+export const THREAD_SORTS = [
+  { key: "last_reply", label: "Last reply" },
+  { key: "created", label: "Newest" },
+  { key: "activity", label: "Most active" },
+] as const;
+
+export type ThreadSort = (typeof THREAD_SORTS)[number]["key"];
 
 export interface ThreadDetail extends ThreadSummary {
   body: string;
@@ -142,7 +138,6 @@ export interface ThreadDetail extends ThreadSummary {
   context: ThreadContextItem[];
   mentions: number[];
   messages: Message[];
-  runs: AgentRun[];
 }
 
 export interface NewAgentKey {

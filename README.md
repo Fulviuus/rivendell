@@ -33,14 +33,35 @@ Project (a folder + its git repo)
         └── resolution → .rivendell/threads/NNNN-slug.md
 ```
 
-### Two lifecycles, deliberately
+### One loop, both roles
 
-- **Assistants** are ephemeral. Rivendell spawns one process per thread, it
-  replies, it exits. It authenticates with a token minted for that run and
-  revoked when the process dies — the long-lived key is never handed to a
-  subprocess.
-- **Coders** are long-lived. Your own Claude Code session attaches with its API
-  key and stays. It calls `wait_for_updates` to learn when replies land.
+Every agent works the same way. You start it, it connects with its API key, and
+it sits in a loop:
+
+```
+cursor = null
+loop:
+  updates = wait_for_updates(cursor)   # blocks server-side, up to 300s
+  react to what came back
+  cursor = updates.next_cursor
+```
+
+`wait_for_updates` is a real long poll against the event log — it does not spin,
+and nothing polls on a timer anywhere in the system.
+
+The only thing that differs is what each role reacts to, and that is a
+permission, not a lifecycle:
+
+| | Coder | Assistant |
+|---|---|---|
+| opens threads | `create_thread` | — |
+| answers them | — | `reply` |
+| closes them | `resolve_thread` | — |
+| reads the project | ✓ | ✓ |
+| waits | `wait_for_updates` | `wait_for_updates` |
+
+Rivendell does not launch anything. An agent's "kind" only sets its label and
+icon.
 
 ### Tags route work
 
@@ -48,16 +69,23 @@ A tag is not a label. It decides who is pulled in, what they are told, what
 verdicts their reply must carry, and how many must answer before the thread
 comes back to you.
 
-| Tag | Verdicts | Quorum |
-|---|---|---|
-| `HELP_REQUEST` | ANSWERED · NEEDS_INFO | 1 |
-| `ADVERSARIAL_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN | 2 |
-| `DESIGN_REVIEW` | APPROVED · CONCERNS · REJECTED | 2 |
-| `SECURITY_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN | 2 |
-| `ARCHITECTURE_DECISION` | APPROVED · CONCERNS · REJECTED | 2 |
-| `SPEC_CLARIFICATION` | ANSWERED · NEEDS_INFO | 1 |
-| `PERF` | CONFIRMED · REFUTED · UNCERTAIN | 1 |
-| `FYI` | — | 0 |
+| Tag | Verdicts |
+|---|---|
+| `HELP_REQUEST` | ANSWERED · NEEDS_INFO |
+| `ADVERSARIAL_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN |
+| `DESIGN_REVIEW` | APPROVED · CONCERNS · REJECTED |
+| `SECURITY_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN |
+| `ARCHITECTURE_DECISION` | APPROVED · CONCERNS · REJECTED |
+| `SPEC_CLARIFICATION` | ANSWERED · NEEDS_INFO |
+| `PERF` | CONFIRMED · REFUTED · UNCERTAIN |
+| `FYI` | — |
+
+### Quorum
+
+How many distinct assistants must reply before a thread flips to **Needs you**.
+The room decides the default — every connected assistant, or a fixed number —
+and any thread can override it. It is always clamped to how many assistants
+could actually answer, so asking for more than exist can never strand a thread.
 
 A reply without a required verdict is rejected at the tool boundary. That is
 deliberate: the coder consumes verdicts programmatically, and prose you have to
@@ -109,10 +137,8 @@ disagree about them:
 
 - per-agent reply cap per thread (default 6)
 - total messages per thread (default 60)
-- concurrent spawned processes per room (default 3)
 - room cost cap in USD (default $5)
 - per-room pause switch — agents are refused, you are not
-- 20-minute hard kill on any spawned process
 
 When a cap is hit the agent is told *why*, so it stops cleanly rather than
 retrying into the wall.
@@ -135,7 +161,6 @@ src-tauri/src/
   db.rs               schema, seeds for tags and launch profiles
   mcp/server.rs       streamable-HTTP JSON-RPC, bearer auth
   mcp/tools.rs        the tool surface agents see
-  spawner.rs          process launch, ephemeral run tokens
   fsjail.rs           read-only path jail
   export.rs           decision records
 mcp-shim/             standalone stdio↔HTTP bridge

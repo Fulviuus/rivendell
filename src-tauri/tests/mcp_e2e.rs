@@ -2,7 +2,6 @@
 //! verdict enforcement, the reply cap, room isolation and the export on resolve.
 
 use rivendell_lib::mcp::server::{serve, McpState};
-use rivendell_lib::spawner::Spawner;
 use rivendell_lib::store::Store;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -28,11 +27,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 async fn boot(name: &str) -> Harness {
     let dir = scratch(name);
     let store = Arc::new(Store::open(&dir.join(".db/rivendell.db")).unwrap());
-    let spawner = Arc::new(Spawner::new(store.clone()));
-    let state = Arc::new(McpState {
-        store: store.clone(),
-        spawner,
-    });
+    let state = Arc::new(McpState { store: store.clone() });
     let running = serve(state, 0).await.unwrap();
     Harness {
         url: running.url,
@@ -84,11 +79,11 @@ async fn full_thread_lifecycle() {
 
     let (_, coder_key) = h
         .store
-        .create_agent(room, "main", "CODER", Some(external), "", false, "")
+        .create_agent(room, "main", "CODER", Some(external), "", "")
         .unwrap();
     let (assistant_id, assistant_key) = h
         .store
-        .create_agent(room, "skeptic", "ASSISTANT", Some(external), "", false, "")
+        .create_agent(room, "skeptic", "ASSISTANT", Some(external), "", "")
         .unwrap();
 
     // --- auth -----------------------------------------------------------
@@ -283,6 +278,317 @@ async fn full_thread_lifecycle() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// A tag whose default quorum exceeds the number of assistants in the room must
+/// not strand the thread. Before this was clamped, a lone assistant replying to
+/// an ADVERSARIAL_REVIEW (quorum 2) left the thread in AWAITING_REPLIES for
+/// ever and it never told the coder it was their turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quorum_cannot_exceed_available_assistants() {
+    let h = boot("quorum").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    // Exactly one assistant, against a tag that asks for two.
+    let (_, only_key) = h
+        .store
+        .create_agent(room, "solo", "ASSISTANT", None, "", "")
+        .unwrap();
+
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Review this", "body": "…", "tag": "ADVERSARIAL_REVIEW"}),
+    );
+    assert!(!is_err, "{text}");
+    let thread_id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+
+    let stored = h.store.thread_detail(thread_id).unwrap();
+    assert_eq!(
+        stored.summary.quorum, 1,
+        "quorum should be clamped to the one assistant that can answer"
+    );
+
+    let (is_err, text) = call(
+        &h.url,
+        &only_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "Found a race.", "verdict": "CONFIRMED"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let after = h.store.thread_detail(thread_id).unwrap();
+    assert_eq!(
+        after.summary.status, "NEEDS_CODER",
+        "one reply from the only assistant must hand the thread back, not wait for a second"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// The room's policy decides the default, and a per-thread argument overrides
+/// it — both still clamped to who can actually answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn room_quorum_policy_is_configurable() {
+    let h = boot("policy").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    for n in ["a", "b", "c"] {
+        h.store
+            .create_agent(room, n, "ASSISTANT", None, "", "")
+            .unwrap();
+    }
+
+    let open = |body: serde_json::Value| -> i64 {
+        let (is_err, text) = call(&h.url, &coder_key, "create_thread", body);
+        assert!(!is_err, "{text}");
+        text.split_whitespace()
+            .find_map(|w| w.trim_end_matches('.').parse().ok())
+            .unwrap()
+    };
+
+    // Default policy is "all": three assistants, quorum three.
+    let t1 = open(json!({"title": "one", "body": "…", "tag": "HELP_REQUEST"}));
+    assert_eq!(h.store.thread_detail(t1).unwrap().summary.quorum, 3);
+
+    // Switch the room to a fixed number.
+    h.store
+        .update_room(room, json!({"quorum_mode": "fixed", "quorum_fixed": 2}))
+        .unwrap();
+    let t2 = open(json!({"title": "two", "body": "…", "tag": "HELP_REQUEST"}));
+    assert_eq!(h.store.thread_detail(t2).unwrap().summary.quorum, 2);
+
+    // An explicit per-thread value beats the room policy.
+    let t3 = open(json!({"title": "three", "body": "…", "tag": "HELP_REQUEST", "quorum": 1}));
+    assert_eq!(h.store.thread_detail(t3).unwrap().summary.quorum, 1);
+
+    // Asking for more than exist is clamped, never stranded.
+    let t4 = open(json!({"title": "four", "body": "…", "tag": "HELP_REQUEST", "quorum": 99}));
+    assert_eq!(h.store.thread_detail(t4).unwrap().summary.quorum, 3);
+
+    // Mentioning one agent narrows the pool, and the quorum with it.
+    let solo = h.store.list_agents(Some(room)).unwrap();
+    let solo = solo.iter().find(|a| a.name == "a").unwrap().id;
+    let t5 = open(json!({"title": "five", "body": "…", "tag": "HELP_REQUEST", "mentions": [solo]}));
+    assert_eq!(h.store.thread_detail(t5).unwrap().summary.quorum, 1);
+
+    // FYI still opts out of replies entirely.
+    let t6 = open(json!({"title": "six", "body": "…", "tag": "FYI"}));
+    assert_eq!(h.store.thread_detail(t6).unwrap().summary.quorum, 0);
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// The three orderings must genuinely differ: an old thread that is still busy
+/// should outrank a newer quiet one under "activity", and lose to it under
+/// "created".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn threads_sort_three_ways() {
+    let h = boot("sorting").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (coder_id, _) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let (asst_id, _) = h
+        .store
+        .create_agent(room, "helper", "ASSISTANT", None, "", "")
+        .unwrap();
+    let coder = h.store.agent_ctx(coder_id).unwrap();
+    let asst = h.store.agent_ctx(asst_id).unwrap();
+
+    let mut open = |title: &str| {
+        h.store
+            .create_thread(
+                &coder,
+                rivendell_lib::models::NewThread {
+                    room_id: room,
+                    title: title.into(),
+                    body: "…".into(),
+                    tag: "FYI".into(),
+                    mentions: vec![],
+                    context: vec![],
+                    quorum: Some(0),
+                    include_diff: false,
+                },
+            )
+            .unwrap()
+    };
+
+    let old_busy = open("old but busy");
+    let newest_quiet = open("newest and quiet");
+
+    // Only the older thread gets replies.
+    for i in 0..3 {
+        h.store
+            .reply(
+                &asst,
+                rivendell_lib::models::NewReply {
+                    thread_id: old_busy,
+                    body: format!("reply {i}"),
+                    verdict: None,
+                    severity: None,
+                    refs: None,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost_usd: 0.0,
+                },
+            )
+            .unwrap();
+    }
+
+    let titles = |sort: &str| -> Vec<String> {
+        h.store
+            .list_threads(Some(room), Some("all"), None, None, Some(sort), 50)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect()
+    };
+
+    // Newest thread first, regardless of who is talking.
+    assert_eq!(titles("created")[0], "newest and quiet");
+    // Busiest first.
+    assert_eq!(titles("activity")[0], "old but busy");
+    // Freshest conversation first — the replies landed after the quiet thread
+    // was opened, so the busy one leads here too.
+    assert_eq!(titles("last_reply")[0], "old but busy");
+
+    // A thread with no replies still sorts by when it was opened rather than
+    // dropping to the bottom on a NULL.
+    let all = h
+        .store
+        .list_threads(Some(room), Some("all"), None, None, Some("last_reply"), 50)
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().any(|t| t.last_reply_at.is_none()));
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// Both roles drive the same loop over the same event log; only their
+/// permissions differ. A coder opening a thread must be visible to a waiting
+/// assistant, and that assistant's reply visible back to the coder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_roles_share_one_loop() {
+    let h = boot("oneloop").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let (_, asst_key) = h
+        .store
+        .create_agent(room, "helper", "ASSISTANT", None, "", "")
+        .unwrap();
+
+    // Both roles are offered the same waiting primitive.
+    for key in [&coder_key, &asst_key] {
+        let (_, body) = rpc(&h.url, Some(key), "tools/list", json!({}));
+        let names: Vec<&str> = body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"wait_for_updates"));
+        // Nothing launches anything any more.
+        assert!(!names.contains(&"dispatch"), "dispatch should be gone: {names:?}");
+    }
+
+    // The assistant parks on the cursor it has now.
+    let (_, before) = call(&h.url, &asst_key, "wait_for_updates", json!({"timeout_s": 1}));
+    let cursor = serde_json::from_str::<Value>(&before).unwrap()["next_cursor"]
+        .as_i64()
+        .unwrap();
+
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Look at this", "body": "…", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "{text}");
+    let thread_id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+
+    // …and sees it without anything having been spawned.
+    let (_, seen) = call(
+        &h.url,
+        &asst_key,
+        "wait_for_updates",
+        json!({"cursor": cursor, "timeout_s": 5}),
+    );
+    let seen: Value = serde_json::from_str(&seen).unwrap();
+    assert!(
+        seen["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "thread.created"),
+        "a waiting assistant must see the new thread: {seen}"
+    );
+
+    // The coder waits the same way and sees the answer come back.
+    let coder_cursor = seen["next_cursor"].as_i64().unwrap() - 1;
+    let (is_err, text) = call(
+        &h.url,
+        &asst_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "Here you go.", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let (_, got) = call(
+        &h.url,
+        &coder_key,
+        "wait_for_updates",
+        json!({"cursor": coder_cursor, "timeout_s": 5}),
+    );
+    let got: Value = serde_json::from_str(&got).unwrap();
+    assert!(
+        got["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "message.created"),
+        "the coder must see the reply: {got}"
+    );
+
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.status,
+        "NEEDS_CODER"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rooms_are_isolated() {
     let h = boot("isolation").await;
@@ -295,11 +601,11 @@ async fn rooms_are_isolated() {
 
     let (_, coder_a) = h
         .store
-        .create_agent(room_a, "a-coder", "CODER", None, "", false, "")
+        .create_agent(room_a, "a-coder", "CODER", None, "", "")
         .unwrap();
     let (_, coder_b) = h
         .store
-        .create_agent(room_b, "b-coder", "CODER", None, "", false, "")
+        .create_agent(room_b, "b-coder", "CODER", None, "", "")
         .unwrap();
 
     let (is_err, text) = call(
@@ -336,7 +642,7 @@ async fn revoked_keys_stop_working() {
     let room = h.store.create_room(project.id, "general", "").unwrap();
     let (agent_id, key) = h
         .store
-        .create_agent(room, "main", "CODER", None, "", false, "")
+        .create_agent(room, "main", "CODER", None, "", "")
         .unwrap();
 
     let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));

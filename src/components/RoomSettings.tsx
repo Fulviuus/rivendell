@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
+import { Button, Field, Icon, Input, Modal, Select, Textarea } from "../ui";
 
 export function RoomSettings({ onClose }: { onClose: () => void }) {
   const { rooms, roomId, refreshRooms, selectRoom, notify } = useStore();
@@ -10,8 +10,9 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   const [purpose, setPurpose] = useState(room?.purpose ?? "");
   const [maxReplies, setMaxReplies] = useState(String(room?.max_replies_per_agent ?? 6));
   const [maxMessages, setMaxMessages] = useState(String(room?.max_thread_messages ?? 60));
-  const [maxRuns, setMaxRuns] = useState(String(room?.max_concurrent_runs ?? 3));
   const [costCap, setCostCap] = useState(String(room?.cost_cap_usd ?? 5));
+  const [quorumMode, setQuorumMode] = useState(room?.quorum_mode ?? "all");
+  const [quorumFixed, setQuorumFixed] = useState(String(room?.quorum_fixed ?? 1));
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -25,8 +26,9 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
         purpose,
         max_replies_per_agent: Number(maxReplies) || 1,
         max_thread_messages: Number(maxMessages) || 10,
-        max_concurrent_runs: Number(maxRuns) || 1,
         cost_cap_usd: Number(costCap) || 0,
+        quorum_mode: quorumMode,
+        quorum_fixed: Math.max(0, Number(quorumFixed) || 0),
       });
       await refreshRooms();
       onClose();
@@ -78,15 +80,35 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
           <Textarea rows={2} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
         </Field>
 
+        <Field
+          label="Replies before a thread comes back to you"
+          hint="the default for new threads; each thread can override it"
+        >
+          <div className="flex gap-2">
+            <Select
+              value={quorumMode}
+              onChange={(e) => setQuorumMode(e.target.value as "all" | "fixed")}
+              className="flex-1"
+            >
+              <option value="all">Every connected assistant</option>
+              <option value="fixed">A fixed number</option>
+            </Select>
+            {quorumMode === "fixed" && (
+              <Input
+                value={quorumFixed}
+                className="w-20"
+                onChange={(e) => setQuorumFixed(e.target.value)}
+              />
+            )}
+          </div>
+        </Field>
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="Replies per agent" hint="per thread">
             <Input value={maxReplies} onChange={(e) => setMaxReplies(e.target.value)} />
           </Field>
           <Field label="Messages per thread">
             <Input value={maxMessages} onChange={(e) => setMaxMessages(e.target.value)} />
-          </Field>
-          <Field label="Concurrent runs" hint="processes at once">
-            <Input value={maxRuns} onChange={(e) => setMaxRuns(e.target.value)} />
           </Field>
           <Field label="Cost cap" hint="USD, room total; 0 = off">
             <Input value={costCap} onChange={(e) => setCostCap(e.target.value)} />

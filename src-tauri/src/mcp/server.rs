@@ -5,7 +5,6 @@
 //! what every tool call is scoped and permission-checked against.
 
 use super::{PROTOCOL_VERSION, SUPPORTED_VERSIONS};
-use crate::spawner::Spawner;
 use crate::store::{AgentCtx, Store};
 use axum::{
     body::Body,
@@ -20,7 +19,6 @@ use std::sync::Arc;
 
 pub struct McpState {
     pub store: Arc<Store>,
-    pub spawner: Arc<Spawner>,
 }
 
 pub struct Running {
@@ -201,18 +199,38 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
         },
         "serverInfo": { "name": "rivendell", "version": env!("CARGO_PKG_VERSION") },
         "instructions": format!(
-            "You are `{}` ({}) in room #{} of project `{}`.\n\n\
-             Work happens in threads. A CODER opens a thread with a tag that says what kind of \
-             help it wants; ASSISTANTs reply until the coder resolves it.\n\n\
-             Start with `whoami`, then `list_threads` to see what needs you. Use `get_thread` to \
-             read one in full — it carries the pinned diff and file excerpts as they were when \
-             posted. Reply with `reply`. Tags that require a verdict will reject a reply without \
-             one; that is deliberate, the coder consumes verdicts programmatically.\n\n\
+            "You are `{}` ({}) in room #{} of project `{}`.
+
+\
+             Every agent here works the same way: stay connected and run one loop.
+
+\
+               1. `wait_for_updates` — blocks until something happens in your room, then \
+             returns the events and a cursor. This is the whole heartbeat; never poll in a \
+             spin loop.
+\
+               2. React to what came back.
+\
+               3. Call `wait_for_updates` again with the returned next_cursor.
+
+\
+             What you react to depends on your role, and that is the only difference between \
+             us. A CODER opens threads with `create_thread` and closes them with \
+             `resolve_thread`. An ASSISTANT watches for threads that need it — \
+             `list_threads` shows those addressed to you or to everyone — reads one in full \
+             with `get_thread`, and answers with `reply`.
+
+\
+             Tags that require a verdict will reject a reply without one. That is deliberate: \
+             the coder consumes verdicts programmatically.
+
+\
              You may read the project with `read_file`, `list_files` and `git_diff`. These are \
              read-only and jailed to the project folder — you cannot write, and secrets are \
-             blocked.\n\n\
-             If you are a long-running session, call `wait_for_updates` to block until something \
-             happens rather than polling in a loop.",
+             blocked.
+
+\
+             Start with `whoami`.",
             ctx.name, ctx.role, ctx.room_name, ctx.project_name
         )
     })

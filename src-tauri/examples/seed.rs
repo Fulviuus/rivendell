@@ -32,7 +32,7 @@ fn main() {
     };
     let room = store.create_room(project.id, "general", "Day-to-day review and help").unwrap();
     store
-        .create_agent(room, "you", "HUMAN", None, "The human in the room.", false, "slate")
+        .create_agent(room, "you", "HUMAN", None, "The human in the room.", "slate")
         .unwrap();
 
     let profiles = store.list_profiles().unwrap();
@@ -45,7 +45,6 @@ fn main() {
             "CODER",
             id_of("external"),
             "The session doing the work.",
-            false,
             "indigo",
         )
         .unwrap();
@@ -56,7 +55,6 @@ fn main() {
             "ASSISTANT",
             id_of("claude-code"),
             "Tries to break things. Concurrency and error paths.",
-            true,
             "rose",
         )
         .unwrap();
@@ -67,7 +65,6 @@ fn main() {
             "ASSISTANT",
             id_of("claude-code"),
             "Security and data handling.",
-            true,
             "amber",
         )
         .unwrap();

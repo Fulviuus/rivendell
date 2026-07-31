@@ -17,7 +17,7 @@ import {
   VerdictChip,
   agentTone,
 } from "../ui";
-import type { AgentRun, Message, ThreadContextItem } from "../types";
+import type { Message, ThreadContextItem } from "../types";
 
 export function ThreadView() {
   const { thread, tags, agents, notify, refreshThread } = useStore();
@@ -42,7 +42,6 @@ export function ThreadView() {
   }
 
   const done = thread.status === "RESOLVED" || thread.status === "WONTFIX";
-  const running = thread.runs.filter((r) => r.status === "RUNNING");
 
   async function post() {
     if (!composing.trim() || !thread) return;
@@ -51,19 +50,6 @@ export function ThreadView() {
       await api.reply({ thread_id: thread.id, body: composing });
       setComposing("");
       await refreshThread();
-    } catch (e) {
-      notify("error", errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function redispatch() {
-    if (!thread) return;
-    setBusy(true);
-    try {
-      const n = await api.dispatchThread(thread.id);
-      notify("info", n > 0 ? `Dispatched ${n} assistant(s).` : "Nothing to dispatch.");
     } catch (e) {
       notify("error", errText(e));
     } finally {
@@ -108,10 +94,6 @@ export function ThreadView() {
           <div className="flex shrink-0 gap-1.5">
             {!done && (
               <>
-                <Button size="sm" onClick={redispatch} disabled={busy} title="Run the assistants again">
-                  <Icon name="play" size={12} />
-                  Dispatch
-                </Button>
                 <Button size="sm" variant="primary" onClick={() => setResolving(true)}>
                   <Icon name="check" size={13} />
                   Resolve
@@ -176,16 +158,6 @@ export function ThreadView() {
             <MessageCard key={m.id} message={m} />
           ))}
         </section>
-
-        {running.length > 0 && (
-          <div className="mt-4 flex items-center gap-2 text-[12.5px] text-muted">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-            {running.map((r) => r.agent_name).join(", ")} {running.length === 1 ? "is" : "are"}{" "}
-            working…
-          </div>
-        )}
-
-        {thread.runs.length > 0 && <RunLogs runs={thread.runs} />}
 
         {thread.resolution_summary && (
           <div className="mt-5 rounded-xl border-l-2 border-l-emerald-400 bg-emerald-50 p-3.5 ring-1 ring-emerald-200 dark:border-l-emerald-500 dark:bg-emerald-500/8 dark:ring-emerald-500/20">
@@ -334,59 +306,6 @@ function MessageCard({ message: m }: { message: Message }) {
         </ul>
       )}
     </article>
-  );
-}
-
-function RunLogs({ runs }: { runs: AgentRun[] }) {
-  const [open, setOpen] = useState(false);
-  const failed = runs.filter((r) => r.status === "FAILED" || r.status === "KILLED");
-
-  return (
-    <div className="mt-5">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-[11.5px] text-muted transition hover:text-strong"
-      >
-        <Icon
-          name="chevron"
-          size={11}
-          className={`transition-transform ${open ? "rotate-90" : ""}`}
-        />
-        {runs.length} run{runs.length === 1 ? "" : "s"}
-        {failed.length > 0 && (
-          <span className="text-rose-600 dark:text-rose-400">· {failed.length} failed</span>
-        )}
-      </button>
-      {open && (
-        <div className="mt-2 space-y-2">
-          {runs.map((r) => (
-            <div key={r.id} className="overflow-hidden rounded-lg bg-card shadow-card ring-1 ring-line">
-              <div className="flex items-center gap-2 px-3 py-1.5 text-[11.5px]">
-                <span className="font-medium text-soft">{r.agent_name}</span>
-                <span
-                  className={
-                    r.status === "EXITED"
-                      ? "text-emerald-600 dark:text-emerald-400"
-                      : r.status === "RUNNING"
-                        ? "text-accent-text"
-                        : "text-rose-600 dark:text-rose-400"
-                  }
-                >
-                  {r.status}
-                  {r.exit_code !== null && r.exit_code !== 0 && ` (${r.exit_code})`}
-                </span>
-                <span className="ml-auto text-faint">{ago(r.started_at)}</span>
-              </div>
-              {r.log && (
-                <pre className="max-h-64 overflow-auto border-t border-line bg-code px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted">
-                  {r.log}
-                </pre>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 

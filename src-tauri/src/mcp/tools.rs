@@ -44,6 +44,7 @@ pub fn common_tools() -> Vec<Value> {
                     "status": {"type": "string", "description": "open (default), all, or an exact status: OPEN, AWAITING_REPLIES, NEEDS_CODER, RESOLVED, BLOCKED, WONTFIX"},
                     "tag": {"type": "string", "description": "Filter to one tag, e.g. ADVERSARIAL_REVIEW"},
                     "mentions_me": {"type": "boolean", "description": "Default true for assistants: only threads addressed to you or to everyone"},
+                    "sort": {"type": "string", "enum": ["last_reply", "created", "activity"], "description": "last_reply (default) — freshest conversation first; created — newest thread first; activity — busiest first"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200}
                 }),
                 &[],
@@ -170,10 +171,11 @@ pub fn coder_tools() -> Vec<Value> {
     vec![
         tool(
             "create_thread",
-            "Open a thread. The tag decides who is pulled in, what they are told to do, and what \
-             shape their replies must take — pick it deliberately. Attach the code under discussion \
-             via `context` or `include_diff`: it is snapshotted now, so the review stays valid even \
-             after you keep working. Assistants are dispatched automatically.",
+            "Open a thread. The tag decides what the assistants are told to do and what shape \
+             their replies must take — pick it deliberately. Attach the code under discussion via \
+             `context` or `include_diff`: it is snapshotted now, so the review stays valid even \
+             after you keep working. Connected assistants pick the thread up on their next \
+             `wait_for_updates`; you do not need to launch anything.",
             obj(
                 json!({
                     "title": {"type": "string"},
@@ -192,7 +194,7 @@ pub fn coder_tools() -> Vec<Value> {
                             "content": {"type": "string", "description": "Only for kind=note."}
                         }, "required": ["kind"]}
                     },
-                    "quorum": {"type": "integer", "minimum": 0, "description": "How many distinct assistants must reply before this comes back to you. Defaults per tag."}
+                    "quorum": {"type": "integer", "minimum": 0, "description": "How many distinct assistants must reply before this comes back to you. Omit to use the room default (normally every assistant that can answer). Silently clamped to the number actually reachable, so asking for more than exist cannot strand the thread."}
                 }),
                 &["title", "body", "tag"],
             ),
@@ -233,19 +235,6 @@ pub fn coder_tools() -> Vec<Value> {
                     "status": {"type": "string", "enum": ["OPEN","AWAITING_REPLIES","NEEDS_CODER","BLOCKED"]}
                 }),
                 &["thread_id", "status"],
-            ),
-            false,
-        ),
-        tool(
-            "dispatch",
-            "Re-run the assistants on a thread — after you have posted an update, or to bring in \
-             an assistant that was not dispatched the first time.",
-            obj(
-                json!({
-                    "thread_id": {"type": "integer"},
-                    "agent_ids": {"type": "array", "items": {"type": "integer"}, "description": "Omit for every eligible assistant."}
-                }),
-                &["thread_id"],
             ),
             false,
         ),
@@ -293,7 +282,7 @@ pub async fn call(
         }
 
         // ---- coder only ----
-        "create_thread" => create_thread(state, ctx, args).await,
+        "create_thread" => create_thread(store, ctx, args),
         "update_thread" => {
             let id = int_arg(&args, "thread_id")?;
             store.update_thread_body(ctx, id, &str_arg(&args, "body")?)?;
@@ -316,18 +305,6 @@ pub async fn call(
             let status = str_arg(&args, "status")?;
             store.set_thread_status(ctx, id, &status)?;
             Ok(format!("Thread {id} is now {status}."))
-        }
-        "dispatch" => {
-            if !ctx.is_coder() {
-                return Err(Error::Forbidden("only a CODER may dispatch".into()));
-            }
-            let id = int_arg(&args, "thread_id")?;
-            let only: Option<Vec<i64>> = args.get("agent_ids").and_then(|v| {
-                v.as_array()
-                    .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-            });
-            let n = state.spawner.dispatch(id, only).await?;
-            Ok(format!("Dispatched {n} assistant(s)."))
         }
 
         other => Err(Error::Invalid(format!("unknown tool `{other}`"))),
@@ -378,6 +355,7 @@ fn list_threads(store: &Arc<Store>, ctx: &AgentCtx, args: &Value) -> Result<Stri
         Some(status),
         tag,
         if mentions_me { Some(ctx.id) } else { None },
+        args.get("sort").and_then(|v| v.as_str()),
         limit,
     )?;
     Ok(serde_json::to_string_pretty(&rows)?)
@@ -401,7 +379,7 @@ fn list_agents(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
     Ok(serde_json::to_string_pretty(&rows)?)
 }
 
-async fn create_thread(state: &Arc<McpState>, ctx: &AgentCtx, args: Value) -> Result<String> {
+fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<String> {
     let context: Vec<ContextInput> = match args.get("context") {
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| Error::Invalid(format!("bad context: {e}")))?,
@@ -425,19 +403,10 @@ async fn create_thread(state: &Arc<McpState>, ctx: &AgentCtx, args: Value) -> Re
             .unwrap_or(false),
     };
 
-    let thread_id = state.store.create_thread(ctx, input)?;
-    let dispatched = state.spawner.dispatch(thread_id, None).await.unwrap_or(0);
-
+    let thread_id = store.create_thread(ctx, input)?;
     Ok(format!(
-        "Opened thread {thread_id}. {} \
-         Call wait_for_updates to be told when replies land, or get_thread({thread_id}) later.",
-        if dispatched > 0 {
-            format!("Dispatched {dispatched} assistant(s).")
-        } else {
-            "No assistants were dispatched — either none are configured for auto-dispatch, or they \
-             are long-running sessions that will pick this up themselves."
-                .to_string()
-        }
+        "Opened thread {thread_id}. Any connected assistant will see it on its next \
+         wait_for_updates. Call wait_for_updates yourself to be told when replies land."
     ))
 }
 
@@ -677,7 +646,7 @@ pub fn prompts_get(store: &Arc<Store>, params: &Value) -> Result<Value> {
 
 pub fn resources_list(store: &Arc<Store>, ctx: &AgentCtx) -> Result<Value> {
     let rows: Vec<Value> = store
-        .list_threads(Some(ctx.room_id), Some("open"), None, None, 100)?
+        .list_threads(Some(ctx.room_id), Some("open"), None, None, None, 100)?
         .into_iter()
         .map(|t| {
             json!({

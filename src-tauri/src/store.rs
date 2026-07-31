@@ -13,15 +13,6 @@ use tokio::sync::broadcast;
 pub struct Store {
     conn: Mutex<Connection>,
     pub events: broadcast::Sender<EventNotice>,
-    /// Tokens minted for a single spawned run, keyed by digest. In memory only:
-    /// they die with the process, which is exactly the lifetime we want.
-    run_tokens: Mutex<std::collections::HashMap<String, RunToken>>,
-}
-
-#[derive(Debug, Clone)]
-struct RunToken {
-    agent_id: i64,
-    run_id: i64,
 }
 
 /// Identity resolved from a bearer token, plus everything a tool call needs.
@@ -62,45 +53,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             events,
-            run_tokens: Mutex::new(std::collections::HashMap::new()),
         })
-    }
-
-    /// Credential for one spawned run. Revoked the moment the process exits.
-    pub fn mint_run_token(&self, agent_id: i64, run_id: i64) -> String {
-        let generated = auth::generate();
-        let token = format!("rvdrun_{}", &generated.full[4..]);
-        let mut map = self
-            .run_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.insert(auth::hash(&token), RunToken { agent_id, run_id });
-        token
-    }
-
-    pub fn revoke_run_token(&self, run_id: i64) {
-        let mut map = self
-            .run_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.retain(|_, t| t.run_id != run_id);
-    }
-
-    fn agent_id_for_run_token(&self, token: &str) -> Option<i64> {
-        let map = self
-            .run_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.get(&auth::hash(token)).map(|t| t.agent_id)
-    }
-
-    pub fn set_run_pid(&self, run_id: i64, pid: Option<i64>) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE agent_runs SET pid=?1 WHERE id=?2",
-            params![pid, run_id],
-        )?;
-        Ok(())
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -253,8 +206,8 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT r.id,r.project_id,p.name,p.folder_path,r.name,r.purpose,r.paused,
-                    r.max_replies_per_agent,r.max_thread_messages,r.max_concurrent_runs,
-                    r.cost_cap_usd,r.created_at,
+                    r.max_replies_per_agent,r.max_thread_messages,
+                    r.cost_cap_usd,r.quorum_mode,r.quorum_fixed,r.created_at,
                     (SELECT COUNT(*) FROM threads t
                       WHERE t.room_id=r.id AND t.status NOT IN ('RESOLVED','WONTFIX'))
              FROM rooms r JOIN projects p ON p.id=r.project_id
@@ -272,10 +225,11 @@ impl Store {
                     paused: r.get::<_, i64>(6)? != 0,
                     max_replies_per_agent: r.get(7)?,
                     max_thread_messages: r.get(8)?,
-                    max_concurrent_runs: r.get(9)?,
-                    cost_cap_usd: r.get(10)?,
-                    created_at: r.get(11)?,
-                    open_threads: r.get(12)?,
+                    cost_cap_usd: r.get(9)?,
+                    quorum_mode: r.get(10)?,
+                    quorum_fixed: r.get(11)?,
+                    created_at: r.get(12)?,
+                    open_threads: r.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -309,8 +263,9 @@ impl Store {
             ("paused", "paused"),
             ("max_replies_per_agent", "max_replies_per_agent"),
             ("max_thread_messages", "max_thread_messages"),
-            ("max_concurrent_runs", "max_concurrent_runs"),
             ("cost_cap_usd", "cost_cap_usd"),
+            ("quorum_mode", "quorum_mode"),
+            ("quorum_fixed", "quorum_fixed"),
         ] {
             let Some(v) = patch.get(key) else { continue };
             let sql = format!("UPDATE rooms SET {col}=?1 WHERE id=?2");
@@ -466,7 +421,7 @@ impl Store {
         let mut sql = String::from(
             "SELECT a.id,a.room_id,a.name,a.role,a.profile_id,p.key,p.label,
                     COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
-                    a.color,a.key_preview,a.auto_dispatch,a.system_note,a.created_at,a.revoked_at
+                    a.color,a.key_preview,a.system_note,a.created_at,a.revoked_at
              FROM agents a LEFT JOIN agent_profiles p ON p.id=a.profile_id",
         );
         let mut ps: Vec<rusqlite::types::Value> = vec![];
@@ -490,10 +445,9 @@ impl Store {
                     icon: r.get(7)?,
                     color: r.get(8)?,
                     key_preview: r.get(9)?,
-                    auto_dispatch: r.get::<_, i64>(10)? != 0,
-                    system_note: r.get(11)?,
-                    created_at: r.get(12)?,
-                    revoked_at: r.get(13)?,
+                    system_note: r.get(10)?,
+                    created_at: r.get(11)?,
+                    revoked_at: r.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -508,7 +462,6 @@ impl Store {
         role: &str,
         profile_id: Option<i64>,
         system_note: &str,
-        auto_dispatch: bool,
         color: &str,
     ) -> Result<(i64, String)> {
         let name = name.trim();
@@ -523,8 +476,8 @@ impl Store {
         let conn = self.lock();
         conn.execute(
             "INSERT INTO agents(room_id,name,role,profile_id,key_id,key_hash,key_preview,
-                                auto_dispatch,system_note,color,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                                system_note,color,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 room_id,
                 name,
@@ -533,7 +486,6 @@ impl Store {
                 key.key_id,
                 key.hash,
                 key.preview,
-                auto_dispatch as i64,
                 system_note.trim(),
                 color.trim(),
                 now()
@@ -591,7 +543,6 @@ impl Store {
                 ("name", "name"),
                 ("system_note", "system_note"),
                 ("color", "color"),
-                ("auto_dispatch", "auto_dispatch"),
                 ("profile_id", "profile_id"),
             ] {
                 let Some(v) = patch.get(key) else { continue };
@@ -635,15 +586,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_agent_auto_dispatch(&self, agent_id: i64, on: bool) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE agents SET auto_dispatch=?1 WHERE id=?2",
-            params![on as i64, agent_id],
-        )?;
-        Ok(())
-    }
-
     pub fn delete_agent(&self, agent_id: i64) -> Result<()> {
         let conn = self.lock();
         conn.execute("DELETE FROM agents WHERE id=?1", params![agent_id])?;
@@ -651,16 +593,7 @@ impl Store {
     }
 
     /// Bearer-token lookup. Returns `None` for unknown, malformed or revoked keys.
-    ///
-    /// Accepts two shapes: an agent's long-lived `rvd_…` key, and the ephemeral
-    /// `rvdrun_…` token held by a live spawned process.
     pub fn authenticate(&self, token: &str) -> Result<Option<AgentCtx>> {
-        if token.starts_with("rvdrun_") {
-            return match self.agent_id_for_run_token(token) {
-                Some(agent_id) => self.agent_ctx(agent_id).map(Some),
-                None => Ok(None),
-            };
-        }
         let Some(key_id) = auth::key_id_of(token) else {
             return Ok(None);
         };
@@ -754,7 +687,46 @@ impl Store {
 
         let mut guard = self.lock();
         let tag = Self::tag(&guard, &input.tag)?;
-        let quorum = input.quorum.unwrap_or(tag.default_quorum).max(0);
+
+        // A quorum larger than the number of assistants that could possibly
+        // answer is a dead end: the thread would sit in AWAITING_REPLIES for
+        // ever and never tell the coder it is their turn. Clamp it to who is
+        // actually eligible — every assistant in the room, or just the
+        // mentioned ones when the thread addresses specific agents.
+        let eligible = {
+            let mut stmt = guard.prepare(
+                "SELECT id FROM agents
+                 WHERE room_id=?1 AND role='ASSISTANT' AND revoked_at IS NULL",
+            )?;
+            let ids: Vec<i64> = stmt
+                .query_map(params![input.room_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            if input.mentions.is_empty() {
+                ids.len() as i64
+            } else {
+                ids.iter().filter(|id| input.mentions.contains(id)).count() as i64
+            }
+        };
+        // Resolution order, most specific first:
+        //   1. an explicit `quorum` on this thread
+        //   2. the tag opting out entirely (FYI expects no replies)
+        //   3. the room's policy — "all" tracks the room as it grows, "fixed"
+        //      pins a number
+        // and the result is clamped to what is actually reachable, because a
+        // quorum larger than the number of assistants that can answer would
+        // leave the thread waiting for ever.
+        let (room_mode, room_fixed): (String, i64) = guard.query_row(
+            "SELECT quorum_mode, quorum_fixed FROM rooms WHERE id=?1",
+            params![input.room_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let quorum = match input.quorum {
+            Some(explicit) => explicit.max(0),
+            None if tag.default_quorum == 0 => 0,
+            None if room_mode == "fixed" => room_fixed.max(0),
+            None => eligible,
+        }
+        .min(eligible);
 
         let git_ref = git::head(&root);
         let git_dirty = git::is_dirty(&root);
@@ -971,6 +943,7 @@ impl Store {
         status: Option<&str>,
         tag: Option<&str>,
         mentions_agent: Option<i64>,
+        sort: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ThreadSummary>> {
         let conn = self.lock();
@@ -1004,7 +977,15 @@ impl Store {
                        OR NOT EXISTS(SELECT 1 FROM thread_mentions m WHERE m.thread_id=t.id))"
             ));
         }
-        sql.push_str(" ORDER BY t.updated_at DESC LIMIT ");
+        // Whitelisted, never interpolated from the caller's string.
+        sql.push_str(match sort.unwrap_or("last_reply") {
+            "created" => " ORDER BY t.created_at DESC",
+            // Busiest first; recency breaks ties so it is not arbitrary.
+            "activity" => " ORDER BY reply_count DESC, t.updated_at DESC",
+            // A thread with no replies yet falls back to when it was opened.
+            _ => " ORDER BY COALESCE(last_reply_at, t.created_at) DESC",
+        });
+        sql.push_str(" LIMIT ");
         sql.push_str(&limit.clamp(1, 500).to_string());
 
         let mut stmt = conn.prepare(&sql)?;
@@ -1085,30 +1066,6 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut stmt = conn.prepare(
-            "SELECT r.id,r.thread_id,r.agent_id,a.name,r.status,r.pid,r.exit_code,r.command,
-                    r.log,r.started_at,r.ended_at
-             FROM agent_runs r JOIN agents a ON a.id=r.agent_id
-             WHERE r.thread_id=?1 ORDER BY r.id",
-        )?;
-        let runs = stmt
-            .query_map(params![thread_id], |r| {
-                Ok(AgentRun {
-                    id: r.get(0)?,
-                    thread_id: r.get(1)?,
-                    agent_id: r.get(2)?,
-                    agent_name: r.get(3)?,
-                    status: r.get(4)?,
-                    pid: r.get(5)?,
-                    exit_code: r.get(6)?,
-                    command: r.get(7)?,
-                    log: r.get(8)?,
-                    started_at: r.get(9)?,
-                    ended_at: r.get(10)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-
         Ok(ThreadDetail {
             summary,
             body,
@@ -1118,7 +1075,6 @@ impl Store {
             context,
             mentions,
             messages,
-            runs,
         })
     }
 
@@ -1271,7 +1227,22 @@ impl Store {
                 params![input.thread_id],
                 |r| r.get(0),
             )?;
-            if responders >= quorum.max(1) {
+            // Clamped again here, not just at creation: an assistant may have
+            // been deleted or revoked since, and a target that can no longer be
+            // reached would strand the thread.
+            let eligible: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agents a
+                 WHERE a.room_id=?1 AND a.role='ASSISTANT' AND a.revoked_at IS NULL
+                   AND (EXISTS(SELECT 1 FROM thread_mentions m
+                                WHERE m.thread_id=?2 AND m.agent_id=a.id)
+                        OR NOT EXISTS(SELECT 1 FROM thread_mentions m
+                                       WHERE m.thread_id=?2))",
+                params![room_id, input.thread_id],
+                |r| r.get(0),
+            )?;
+            // `.max(1)` so a reply always counts for something even when the
+            // tag asks for no replies at all.
+            if responders >= quorum.min(eligible).max(1) {
                 "NEEDS_CODER"
             } else {
                 "AWAITING_REPLIES"
@@ -1306,115 +1277,6 @@ impl Store {
         drop(guard);
         self.publish(notice);
         Ok(message_id)
-    }
-
-    // -------------------------------------------------------------- runs ---
-
-    pub fn start_run(&self, thread_id: i64, agent_id: i64, command: &str) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO agent_runs(thread_id,agent_id,status,command,started_at)
-             VALUES(?1,?2,'RUNNING',?3,?4)",
-            params![thread_id, agent_id, command, now()],
-        )?;
-        let id = conn.last_insert_rowid();
-        let room: Option<i64> = conn
-            .query_row("SELECT room_id FROM threads WHERE id=?1", params![thread_id], |r| r.get(0))
-            .optional()?;
-        let notice = Self::append_event(
-            &conn,
-            room,
-            Some(thread_id),
-            "run.started",
-            Some(agent_id),
-            serde_json::json!({"run_id": id}),
-        )?;
-        drop(conn);
-        self.publish(notice);
-        Ok(id)
-    }
-
-    pub fn append_run_log(&self, run_id: i64, chunk: &str) -> Result<()> {
-        let conn = self.lock();
-        // Keep the tail only; a chatty agent should not be able to grow the DB
-        // without bound.
-        conn.execute(
-            "UPDATE agent_runs
-             SET log = substr(log || ?1, max(1, length(log || ?1) - 60000))
-             WHERE id=?2",
-            params![chunk, run_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn finish_run(&self, run_id: i64, status: &str, exit_code: Option<i32>) -> Result<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE agent_runs SET status=?1, exit_code=?2, ended_at=?3 WHERE id=?4",
-            params![status, exit_code, now(), run_id],
-        )?;
-        let row: Option<(i64, i64)> = conn
-            .query_row(
-                "SELECT thread_id,agent_id FROM agent_runs WHERE id=?1",
-                params![run_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((thread_id, agent_id)) = row {
-            let room: Option<i64> = conn
-                .query_row("SELECT room_id FROM threads WHERE id=?1", params![thread_id], |r| r.get(0))
-                .optional()?;
-            let notice = Self::append_event(
-                &conn,
-                room,
-                Some(thread_id),
-                "run.finished",
-                Some(agent_id),
-                serde_json::json!({"run_id": run_id, "status": status, "exit_code": exit_code}),
-            )?;
-            drop(conn);
-            self.publish(notice);
-        }
-        Ok(())
-    }
-
-    pub fn active_run_count(&self, room_id: i64) -> Result<i64> {
-        let conn = self.lock();
-        Ok(conn.query_row(
-            "SELECT COUNT(*) FROM agent_runs r JOIN threads t ON t.id=r.thread_id
-             WHERE t.room_id=?1 AND r.status='RUNNING'",
-            params![room_id],
-            |r| r.get(0),
-        )?)
-    }
-
-    /// Anything still marked RUNNING at startup belongs to a previous process.
-    pub fn reap_orphan_runs(&self) -> Result<usize> {
-        let conn = self.lock();
-        Ok(conn.execute(
-            "UPDATE agent_runs SET status='KILLED', ended_at=?1 WHERE status='RUNNING'",
-            params![now()],
-        )?)
-    }
-
-    /// Assistants eligible for auto-dispatch on a thread: explicit mentions if
-    /// any, otherwise every auto-dispatch assistant in the room.
-    pub fn dispatch_targets(&self, thread_id: i64) -> Result<Vec<i64>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT a.id FROM agents a
-             JOIN threads t ON t.room_id=a.room_id
-             WHERE t.id=?1 AND a.role='ASSISTANT' AND a.revoked_at IS NULL AND a.auto_dispatch=1
-               AND (
-                 EXISTS(SELECT 1 FROM thread_mentions m WHERE m.thread_id=t.id AND m.agent_id=a.id)
-                 OR NOT EXISTS(SELECT 1 FROM thread_mentions m WHERE m.thread_id=t.id)
-               )
-             ORDER BY a.name",
-        )?;
-        let out = stmt
-            .query_map(params![thread_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()?;
-        Ok(out)
     }
 
     pub fn log_file_access(
@@ -1532,12 +1394,13 @@ const THREAD_SUMMARY_SQL: &str = "
 SELECT t.id, t.room_id, r.name, t.title, t.tag, t.status, t.author_agent_id, a.name,
        COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
        t.quorum,
-       (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id),
+       (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS reply_count,
        (SELECT COUNT(DISTINCT m.agent_id) FROM messages m
           JOIN agents ag ON ag.id=m.agent_id
-         WHERE m.thread_id=t.id AND ag.role='ASSISTANT'),
-       (SELECT COALESCE(SUM(m.cost_usd),0) FROM messages m WHERE m.thread_id=t.id),
-       t.git_ref, t.created_at, t.updated_at, t.resolved_at, a.color
+         WHERE m.thread_id=t.id AND ag.role='ASSISTANT') AS responder_count,
+       (SELECT COALESCE(SUM(m.cost_usd),0) FROM messages m WHERE m.thread_id=t.id) AS cost_usd,
+       t.git_ref, t.created_at, t.updated_at, t.resolved_at, a.color,
+       (SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id=t.id) AS last_reply_at
 FROM threads t
 JOIN rooms r ON r.id=t.room_id
 JOIN agents a ON a.id=t.author_agent_id
@@ -1563,5 +1426,6 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadSummary> {
         updated_at: r.get(15)?,
         resolved_at: r.get(16)?,
         author_color: r.get(17)?,
+        last_reply_at: r.get(18)?,
     })
 }

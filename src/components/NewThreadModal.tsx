@@ -30,6 +30,14 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
   const tag = useMemo(() => tags.find((t) => t.key === tagKey), [tags, tagKey]);
   const assistants = agents.filter((a) => a.role === "ASSISTANT" && !a.revoked_at);
 
+  // Mentioning specific agents narrows who can answer, so the quorum choices
+  // have to narrow with it — offering more than this would strand the thread.
+  const eligible = mentions.length > 0 ? mentions.length : assistants.length;
+  const roomDefaultLabel =
+    room?.quorum_mode === "fixed"
+      ? `Room default — ${Math.min(room.quorum_fixed, eligible)}`
+      : `Room default — every connected assistant (${eligible})`;
+
   useEffect(() => {
     if (!tagKey && tags.length) setTagKey(tags[0].key);
   }, [tags, tagKey]);
@@ -239,14 +247,18 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           </Field>
 
           <Field
-            label="Quorum"
-            hint={tag ? `tag default: ${tag.default_quorum}` : ""}
+            label="Wait for"
+            hint={
+              assistants.length === 0
+                ? "no assistants in this room"
+                : `${eligible} can answer this thread`
+            }
           >
             <Select value={quorum} onChange={(e) => setQuorum(e.target.value)}>
-              <option value="">Use the tag's default</option>
-              {[0, 1, 2, 3, 4, 5].map((n) => (
+              <option value="">{roomDefaultLabel}</option>
+              {Array.from({ length: eligible + 1 }, (_, n) => (
                 <option key={n} value={n}>
-                  {n === 0 ? "No replies needed" : `${n} assistant${n > 1 ? "s" : ""} must reply`}
+                  {n === 0 ? "No replies needed" : `${n} assistant${n > 1 ? "s" : ""}`}
                 </option>
               ))}
             </Select>

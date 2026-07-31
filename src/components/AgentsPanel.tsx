@@ -104,9 +104,6 @@ export function AgentsPanel({ onClose }: { onClose: () => void }) {
               </div>
               <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-faint">
                 {a.key_preview && <code className="font-mono">{a.key_preview}</code>}
-                {a.role === "ASSISTANT" && (
-                  <span>{a.auto_dispatch ? "auto-dispatch on" : "manual only"}</span>
-                )}
               </div>
               {a.system_note && (
                 <p className="mt-1 text-[12px] leading-snug text-muted">{a.system_note}</p>
@@ -114,19 +111,6 @@ export function AgentsPanel({ onClose }: { onClose: () => void }) {
             </div>
 
             <div className="flex shrink-0 gap-1">
-              {a.role === "ASSISTANT" && (
-                <Button
-                  size="sm"
-                  variant="subtle"
-                  title={a.auto_dispatch ? "Disable auto-dispatch" : "Enable auto-dispatch"}
-                  onClick={async () => {
-                    await api.setAgentAutoDispatch(a.id, !a.auto_dispatch);
-                    await refreshAgents();
-                  }}
-                >
-                  <Icon name={a.auto_dispatch ? "pause" : "play"} size={12} />
-                </Button>
-              )}
               <Button size="sm" variant="subtle" title="Edit agent" onClick={() => setEditing(a)}>
                 <Icon name="gear" size={12} />
               </Button>
@@ -142,9 +126,9 @@ export function AgentsPanel({ onClose }: { onClose: () => void }) {
 
         <div className="flex justify-between pt-2">
           <p className="max-w-md text-[11.5px] leading-relaxed text-faint">
-            Assistants Rivendell launches itself get a one-time token per run, so their long-lived
-            key stays unused. Use the key below for a session you attach yourself — typically your
-            coder.
+            Every agent connects the same way: start it yourself, point it at Rivendell with its
+            key, and have it sit on <code className="font-mono">wait_for_updates</code>. Coders open
+            and resolve threads; assistants answer them.
           </p>
           <Button variant="primary" onClick={() => setCreating(true)} disabled={!room}>
             <Icon name="plus" size={13} />
@@ -169,11 +153,9 @@ function NewAgentModal({
   const [profileId, setProfileId] = useState<string>("");
   const [note, setNote] = useState("");
   const [color, setColor] = useState("");
-  const [autoDispatch, setAutoDispatch] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const profile = profiles.find((p) => String(p.id) === profileId);
-  const external = profile?.key === "external";
 
   async function submit() {
     if (roomId === null || !name.trim()) return;
@@ -186,7 +168,6 @@ function NewAgentModal({
         profileId: profileId ? Number(profileId) : null,
         systemNote: note,
         color,
-        autoDispatch: role === "ASSISTANT" && autoDispatch && !external,
       });
       await refreshAgents();
       onCreated(key, name.trim());
@@ -218,7 +199,7 @@ function NewAgentModal({
 
         <Field
           label="Kind"
-          hint={role === "CODER" ? "a coder is usually your own attached session" : ""}
+          hint="which tool this is — sets its icon"
         >
           <Select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
             <option value="">Choose…</option>
@@ -233,11 +214,6 @@ function NewAgentModal({
         {profile && (
           <div className="rounded-lg bg-code p-2.5 text-[12px] leading-relaxed text-muted ring-1 ring-line">
             {profile.notes}
-            {profile.launch_cmd && (
-              <div className="mt-1.5 font-mono text-[11px] text-faint">
-                launches: {profile.launch_cmd} {JSON.parse(profile.launch_args).join(" ")}
-              </div>
-            )}
           </div>
         )}
 
@@ -257,18 +233,6 @@ function NewAgentModal({
           />
         </Field>
 
-        {role === "ASSISTANT" && !external && (
-          <label className="flex items-center gap-2 text-[12.5px] text-soft">
-            <input
-              type="checkbox"
-              checked={autoDispatch}
-              onChange={(e) => setAutoDispatch(e.target.checked)}
-              className="accent-accent"
-            />
-            Launch automatically when a thread needs replies
-          </label>
-        )}
-
         <div className="flex justify-end gap-2 pt-1">
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={submit} disabled={busy || !name.trim()}>
@@ -286,7 +250,6 @@ function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void 
   const [note, setNote] = useState(agent.system_note);
   const [color, setColor] = useState(agent.color);
   const [profileId, setProfileId] = useState(agent.profile_id ? String(agent.profile_id) : "");
-  const [autoDispatch, setAutoDispatch] = useState(agent.auto_dispatch);
   const [busy, setBusy] = useState(false);
 
   async function save() {
@@ -296,7 +259,6 @@ function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void 
         name: name.trim(),
         system_note: note,
         color,
-        auto_dispatch: autoDispatch,
         profile_id: profileId ? Number(profileId) : null,
       });
       await refreshAgents();
@@ -337,18 +299,6 @@ function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void 
         <Field label="Note" hint="shown to other agents in the room">
           <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
-
-        {agent.role === "ASSISTANT" && (
-          <label className="flex items-center gap-2 text-[12.5px] text-soft">
-            <input
-              type="checkbox"
-              checked={autoDispatch}
-              onChange={(e) => setAutoDispatch(e.target.checked)}
-              className="accent-accent"
-            />
-            Launch automatically when a thread needs replies
-          </label>
-        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <Button onClick={onClose}>Cancel</Button>

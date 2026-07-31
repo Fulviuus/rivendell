@@ -3,7 +3,6 @@
 
 use crate::error::{Error, Result};
 use crate::models::*;
-use crate::spawner::Spawner;
 use crate::store::Store;
 use serde::Serialize;
 use serde_json::Value;
@@ -12,7 +11,9 @@ use tauri::State;
 
 pub struct AppState {
     pub store: Arc<Store>,
-    pub spawner: Arc<Spawner>,
+    /// Filled in once the MCP listener binds; shown in the UI and used to
+    /// build the connection snippets.
+    pub mcp_url: Arc<std::sync::RwLock<String>>,
 }
 
 #[derive(Serialize)]
@@ -33,12 +34,18 @@ pub struct ServerInfo {
 // ---------------------------------------------------------------- server ---
 
 #[tauri::command]
-pub async fn server_info(state: State<'_, AppState>) -> Result<ServerInfo> {
-    let url = state.spawner.url().await;
+pub fn server_info(state: State<'_, AppState>) -> Result<ServerInfo> {
+    let url = state.url();
     Ok(ServerInfo {
         listening: !url.is_empty(),
         url,
     })
+}
+
+impl AppState {
+    fn url(&self) -> String {
+        self.mcp_url.read().map(|u| u.clone()).unwrap_or_default()
+    }
 }
 
 // -------------------------------------------------------------- projects ---
@@ -77,7 +84,7 @@ pub fn create_room(
     // so you are a participant rather than a spectator.
     state
         .store
-        .create_agent(room_id, "you", "HUMAN", None, "The human in the room.", false, "slate")?;
+        .create_agent(room_id, "you", "HUMAN", None, "The human in the room.", "slate")?;
     Ok(room_id)
 }
 
@@ -111,14 +118,13 @@ pub fn list_agents(state: State<'_, AppState>, room_id: Option<i64>) -> Result<V
 }
 
 #[tauri::command]
-pub async fn create_agent(
+pub fn create_agent(
     state: State<'_, AppState>,
     room_id: i64,
     name: String,
     role: String,
     profile_id: Option<i64>,
     system_note: String,
-    auto_dispatch: bool,
     color: Option<String>,
 ) -> Result<NewAgentKey> {
     let (agent_id, api_key) = state.store.create_agent(
@@ -127,17 +133,16 @@ pub async fn create_agent(
         &role,
         profile_id,
         &system_note,
-        auto_dispatch,
         color.as_deref().unwrap_or(""),
     )?;
-    let url = state.spawner.url().await;
+    let url = state.url();
     Ok(connection_bundle(agent_id, api_key, &url))
 }
 
 #[tauri::command]
-pub async fn rotate_agent_key(state: State<'_, AppState>, agent_id: i64) -> Result<NewAgentKey> {
+pub fn rotate_agent_key(state: State<'_, AppState>, agent_id: i64) -> Result<NewAgentKey> {
     let api_key = state.store.rotate_key(agent_id)?;
-    let url = state.spawner.url().await;
+    let url = state.url();
     Ok(connection_bundle(agent_id, api_key, &url))
 }
 
@@ -149,15 +154,6 @@ pub fn update_agent(state: State<'_, AppState>, agent_id: i64, patch: Value) -> 
 #[tauri::command]
 pub fn set_agent_revoked(state: State<'_, AppState>, agent_id: i64, revoked: bool) -> Result<()> {
     state.store.set_agent_revoked(agent_id, revoked)
-}
-
-#[tauri::command]
-pub fn set_agent_auto_dispatch(
-    state: State<'_, AppState>,
-    agent_id: i64,
-    enabled: bool,
-) -> Result<()> {
-    state.store.set_agent_auto_dispatch(agent_id, enabled)
 }
 
 #[tauri::command]
@@ -215,6 +211,7 @@ pub fn list_threads(
     room_id: Option<i64>,
     status: Option<String>,
     tag: Option<String>,
+    sort: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<ThreadSummary>> {
     state.store.list_threads(
@@ -222,6 +219,7 @@ pub fn list_threads(
         status.as_deref(),
         tag.as_deref(),
         None,
+        sort.as_deref(),
         limit.unwrap_or(200),
     )
 }
@@ -250,20 +248,15 @@ fn actor(store: &Arc<Store>, room_id: i64, as_agent_id: Option<i64>) -> Result<c
 }
 
 #[tauri::command]
-pub async fn create_thread(
+pub fn create_thread(
     state: State<'_, AppState>,
     input: NewThread,
     as_agent_id: Option<i64>,
 ) -> Result<i64> {
     let ctx = actor(&state.store, input.room_id, as_agent_id)?;
-    let thread_id = state.store.create_thread(&ctx, input)?;
-    let spawner = state.spawner.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = spawner.dispatch(thread_id, None).await {
-            tracing::warn!("dispatch failed: {e}");
-        }
-    });
-    Ok(thread_id)
+    // Connected assistants see the resulting event on their next
+    // `wait_for_updates`; nothing needs launching here.
+    state.store.create_thread(&ctx, input)
 }
 
 #[tauri::command]
@@ -313,15 +306,6 @@ pub fn set_thread_status(
     let detail = state.store.thread_detail(thread_id)?;
     let ctx = actor(&state.store, detail.summary.room_id, as_agent_id)?;
     state.store.set_thread_status(&ctx, thread_id, &status)
-}
-
-#[tauri::command]
-pub async fn dispatch_thread(
-    state: State<'_, AppState>,
-    thread_id: i64,
-    agent_ids: Option<Vec<i64>>,
-) -> Result<usize> {
-    state.spawner.dispatch(thread_id, agent_ids).await
 }
 
 // ---------------------------------------------------------------- search ---

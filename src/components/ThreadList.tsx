@@ -1,10 +1,21 @@
 import { useMemo } from "react";
 import { useStore } from "../store";
 import { ago, Empty, Icon, StatusChip, TagChip, tagStripe } from "../ui";
+import { THREAD_SORTS, type ThreadSort } from "../types";
 
 export function ThreadList({ onNew }: { onNew: () => void }) {
-  const { threads, threadId, selectThread, tags, statusFilter, tagFilter, setFilters, rooms, roomId } =
-    useStore();
+  const {
+    threads,
+    threadId,
+    selectThread,
+    tags,
+    statusFilter,
+    tagFilter,
+    sortBy,
+    setFilters,
+    rooms,
+    roomId,
+  } = useStore();
 
   const tagByKey = useMemo(() => new Map(tags.map((t) => [t.key, t])), [tags]);
   const room = rooms.find((r) => r.id === roomId);
@@ -28,7 +39,7 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
         </button>
       </div>
 
-      <div className="flex gap-1.5 border-b border-line px-3 py-2">
+      <div className="flex flex-wrap gap-1.5 border-b border-line px-3 py-2">
         <select
           value={statusFilter}
           onChange={(e) => setFilters({ status: e.target.value })}
@@ -50,6 +61,18 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
           {tags.map((t) => (
             <option key={t.key} value={t.key}>
               {t.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setFilters({ sort: e.target.value as ThreadSort })}
+          title="Sort threads"
+          className="flex-1 rounded-md bg-card px-1.5 py-1 text-[12px] text-soft ring-1 ring-line ring-inset outline-none"
+        >
+          {THREAD_SORTS.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.label}
             </option>
           ))}
         </select>
@@ -88,8 +111,23 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
 
                   <div className="flex items-center gap-1.5">
                     {tag && <TagChip color={tag.color} label={tag.label} />}
-                    <span className="ml-auto shrink-0 text-[11px] text-faint">
-                      {ago(t.updated_at)}
+                    <span
+                      className="ml-auto shrink-0 text-[11px] text-faint"
+                      title={
+                        sortBy === "created"
+                          ? `opened ${ago(t.created_at)}`
+                          : t.last_reply_at
+                            ? `last reply ${ago(t.last_reply_at)}`
+                            : `opened ${ago(t.created_at)}`
+                      }
+                    >
+                      {sortBy === "activity"
+                        ? `${t.reply_count} ${t.reply_count === 1 ? "reply" : "replies"}`
+                        : ago(
+                            sortBy === "created"
+                              ? t.created_at
+                              : (t.last_reply_at ?? t.created_at),
+                          )}
                     </span>
                   </div>
 

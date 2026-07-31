@@ -9,6 +9,7 @@ import type {
   Room,
   Tag,
   ThreadDetail,
+  ThreadSort,
   ThreadSummary,
 } from "./types";
 
@@ -29,6 +30,7 @@ interface State {
 
   statusFilter: string;
   tagFilter: string;
+  sortBy: ThreadSort;
   toast: { kind: "error" | "info"; text: string } | null;
 
   boot: () => Promise<void>;
@@ -38,7 +40,7 @@ interface State {
   refreshThreads: () => Promise<void>;
   refreshAgents: () => Promise<void>;
   refreshThread: () => Promise<void>;
-  setFilters: (f: { status?: string; tag?: string }) => Promise<void>;
+  setFilters: (f: { status?: string; tag?: string; sort?: ThreadSort }) => Promise<void>;
   notify: (kind: "error" | "info", text: string) => void;
 }
 
@@ -56,6 +58,7 @@ export const useStore = create<State>((set, get) => ({
   thread: null,
   statusFilter: "open",
   tagFilter: "all",
+  sortBy: "last_reply",
   toast: null,
 
   notify: (kind, text) => {
@@ -113,9 +116,9 @@ export const useStore = create<State>((set, get) => ({
   },
 
   refreshThreads: async () => {
-    const { roomId, statusFilter, tagFilter } = get();
+    const { roomId, statusFilter, tagFilter, sortBy } = get();
     if (roomId === null) return;
-    set({ threads: await api.listThreads(roomId, statusFilter, tagFilter) });
+    set({ threads: await api.listThreads(roomId, statusFilter, tagFilter, sortBy) });
   },
 
   refreshAgents: async () => {
@@ -139,6 +142,7 @@ export const useStore = create<State>((set, get) => ({
     set({
       statusFilter: f.status ?? get().statusFilter,
       tagFilter: f.tag ?? get().tagFilter,
+      sortBy: f.sort ?? get().sortBy,
     });
     await get().refreshThreads();
   },

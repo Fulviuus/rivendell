@@ -22,8 +22,10 @@ pub struct Room {
     pub paused: bool,
     pub max_replies_per_agent: i64,
     pub max_thread_messages: i64,
-    pub max_concurrent_runs: i64,
     pub cost_cap_usd: f64,
+    /// "all" — every assistant that can answer; "fixed" — `quorum_fixed`.
+    pub quorum_mode: String,
+    pub quorum_fixed: i64,
     pub open_threads: i64,
     pub created_at: String,
 }
@@ -53,7 +55,6 @@ pub struct Agent {
     pub icon: String,
     pub color: String,
     pub key_preview: Option<String>,
-    pub auto_dispatch: bool,
     pub system_note: String,
     pub created_at: String,
     pub revoked_at: Option<String>,
@@ -120,6 +121,8 @@ pub struct ThreadSummary {
     pub created_at: String,
     pub updated_at: String,
     pub resolved_at: Option<String>,
+    /// When the newest reply landed; None until someone answers.
+    pub last_reply_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,22 +136,6 @@ pub struct ThreadDetail {
     pub context: Vec<ThreadContextItem>,
     pub mentions: Vec<i64>,
     pub messages: Vec<Message>,
-    pub runs: Vec<AgentRun>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentRun {
-    pub id: i64,
-    pub thread_id: i64,
-    pub agent_id: i64,
-    pub agent_name: String,
-    pub status: String,
-    pub pid: Option<i64>,
-    pub exit_code: Option<i64>,
-    pub command: String,
-    pub log: String,
-    pub started_at: String,
-    pub ended_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
