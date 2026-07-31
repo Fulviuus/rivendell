@@ -780,6 +780,98 @@ async fn a_thread_nobody_touches_comes_back() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// The four filter buckets must partition every status: anything that falls
+/// through all of them is a thread you can never find again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_filter_buckets_cover_everything() {
+    let h = boot("buckets").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (coder_id, _) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let coder = h.store.agent_ctx(coder_id).unwrap();
+
+    let open = |title: &str| {
+        h.store
+            .create_thread(
+                &coder,
+                rivendell_lib::models::NewThread {
+                    room_id: room,
+                    title: title.into(),
+                    body: "…".into(),
+                    tag: "FYI".into(),
+                    mentions: vec![],
+                    context: vec![],
+                    quorum: Some(0),
+                    include_diff: false,
+                },
+            )
+            .unwrap()
+    };
+
+    // One thread in each of the six internal statuses.
+    let t_open = open("open");
+    let t_awaiting = open("awaiting");
+    let t_needs = open("needs");
+    let t_resolved = open("resolved");
+    let t_wontfix = open("wontfix");
+    let t_blocked = open("blocked");
+
+    h.store.set_thread_status(&coder, t_awaiting, "AWAITING_REPLIES").unwrap();
+    h.store.set_thread_status(&coder, t_needs, "NEEDS_CODER").unwrap();
+    h.store.resolve_thread(&coder, t_resolved, "done", "RESOLVED").unwrap();
+    h.store.resolve_thread(&coder, t_wontfix, "no", "WONTFIX").unwrap();
+    h.store.resolve_thread(&coder, t_blocked, "waiting on upstream", "BLOCKED").unwrap();
+
+    let ids = |bucket: &str| -> Vec<i64> {
+        let mut v: Vec<i64> = h
+            .store
+            .list_threads(Some(room), Some(bucket), None, None, None, 50)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        v.sort();
+        v
+    };
+
+    let mut live = vec![t_open, t_awaiting, t_needs];
+    live.sort();
+    assert_eq!(ids("open"), live, "Open is live work only");
+
+    let mut done = vec![t_resolved, t_wontfix];
+    done.sort();
+    assert_eq!(ids("resolved"), done, "Resolved covers WONTFIX too");
+
+    assert_eq!(ids("blocked"), vec![t_blocked]);
+
+    let mut everything = vec![t_open, t_awaiting, t_needs, t_resolved, t_wontfix, t_blocked];
+    everything.sort();
+    assert_eq!(ids("all"), everything);
+
+    // Together the three narrow buckets account for every thread — nothing is
+    // reachable only through "All".
+    let mut union = [ids("open"), ids("resolved"), ids("blocked")].concat();
+    union.sort();
+    assert_eq!(union, everything, "the buckets must partition, not merely overlap");
+
+    // The room badge counts exactly what the Open filter shows.
+    let rooms = h.store.list_rooms().unwrap();
+    let badge = rooms.iter().find(|r| r.id == room).unwrap().open_threads;
+    assert_eq!(
+        badge,
+        live.len() as i64,
+        "a badge that disagrees with the list is the confusion we removed"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rooms_are_isolated() {
     let h = boot("isolation").await;

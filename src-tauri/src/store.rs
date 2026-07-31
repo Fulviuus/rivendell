@@ -209,7 +209,7 @@ impl Store {
                     r.max_replies_per_agent,r.max_thread_messages,r.response_timeout_secs,
                     r.cost_cap_usd,r.quorum_mode,r.quorum_fixed,r.created_at,
                     (SELECT COUNT(*) FROM threads t
-                      WHERE t.room_id=r.id AND t.status NOT IN ('RESOLVED','WONTFIX'))
+                      WHERE t.room_id=r.id AND t.status IN ('OPEN','AWAITING_REPLIES','NEEDS_CODER'))
              FROM rooms r JOIN projects p ON p.id=r.project_id
              ORDER BY p.name, r.name",
         )?;
@@ -1102,7 +1102,13 @@ impl Store {
             sql.push_str(&format!(" AND t.room_id=?{}", ps.len()));
         }
         match status {
-            Some("open") => sql.push_str(" AND t.status NOT IN ('RESOLVED','WONTFIX')"),
+            Some("open") => {
+                sql.push_str(&format!(" AND t.status IN {OPEN_STATUS_SQL}"));
+            }
+            Some("resolved") => {
+                sql.push_str(&format!(" AND t.status IN {DONE_STATUS_SQL}"));
+            }
+            Some("blocked") => sql.push_str(" AND t.status = 'BLOCKED'"),
             Some(s) if !s.is_empty() && s != "all" => {
                 ps.push(s.to_string().into());
                 sql.push_str(&format!(" AND t.status=?{}", ps.len()));

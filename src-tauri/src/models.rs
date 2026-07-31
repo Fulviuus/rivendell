@@ -232,6 +232,13 @@ pub const STATUSES: &[&str] = &[
     "WONTFIX",
 ];
 
+/// The three statuses that mean "still live work". Shared so the thread filter
+/// and the room's unread badge cannot disagree about what Open means — a badge
+/// showing 3 next to a list of 2 is exactly the kind of confusion worth
+/// designing out.
+pub const OPEN_STATUS_SQL: &str = "('OPEN','AWAITING_REPLIES','NEEDS_CODER')";
+pub const DONE_STATUS_SQL: &str = "('RESOLVED','WONTFIX')";
+
 pub fn is_terminal(status: &str) -> bool {
     matches!(status, "RESOLVED" | "WONTFIX")
 }

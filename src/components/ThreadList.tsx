@@ -45,12 +45,10 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
           onChange={(e) => setFilters({ status: e.target.value })}
           className="flex-1 rounded-md bg-card px-1.5 py-1 text-[12px] text-soft ring-1 ring-line ring-inset outline-none"
         >
-          <option value="open">Needs attention</option>
+          <option value="open">Open threads</option>
           <option value="all">All threads</option>
-          <option value="NEEDS_CODER">Needs you</option>
-          <option value="AWAITING_REPLIES">Awaiting replies</option>
-          <option value="RESOLVED">Resolved</option>
-          <option value="BLOCKED">Blocked</option>
+          <option value="resolved">Resolved threads</option>
+          <option value="blocked">Blocked threads</option>
         </select>
         <select
           value={tagFilter}

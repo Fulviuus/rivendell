@@ -41,7 +41,7 @@ pub fn common_tools() -> Vec<Value> {
              only listed for those agents unless you pass mentions_me=false.",
             obj(
                 json!({
-                    "status": {"type": "string", "description": "open (default), all, or an exact status: OPEN, AWAITING_REPLIES, NEEDS_CODER, RESOLVED, BLOCKED, WONTFIX"},
+                    "status": {"type": "string", "description": "open (default — still live work), resolved, blocked, all, or one exact status: OPEN, AWAITING_REPLIES, NEEDS_CODER, RESOLVED, BLOCKED, WONTFIX"},
                     "tag": {"type": "string", "description": "Filter to one tag, e.g. ADVERSARIAL_REVIEW"},
                     "mentions_me": {"type": "boolean", "description": "Default true for assistants: only threads addressed to you or to everyone"},
                     "sort": {"type": "string", "enum": ["last_reply", "created", "activity"], "description": "last_reply (default) — freshest conversation first; created — newest thread first; activity — busiest first"},
