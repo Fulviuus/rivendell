@@ -20,7 +20,7 @@ import {
 import type { Message, ThreadContextItem, ThreadDetail } from "../types";
 
 export function ThreadView() {
-  const { thread, tags, agents, rooms, roomId, notify, refreshThread } = useStore();
+  const { thread, tags, rooms, roomId, notify, refreshThread } = useStore();
   const room = rooms.find((r) => r.id === roomId);
   const [composing, setComposing] = useState("");
   const [resolving, setResolving] = useState(false);
@@ -195,10 +195,7 @@ export function ThreadView() {
               }
             }}
           />
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-[11.5px] text-muted">
-              posting as {agents.find((a) => a.role === "HUMAN")?.name ?? "you"}
-            </span>
+          <div className="mt-2 flex items-center justify-end">
             <Button variant="primary" size="sm" onClick={post} disabled={busy || !composing.trim()}>
               Post update
             </Button>
