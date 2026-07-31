@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "rivendell-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "stdio-to-HTTP bridge for the Rivendell MCP server"
+
+[[bin]]
+name = "rivendell-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

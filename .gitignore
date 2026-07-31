@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.DS_Store
+.idea/
+.vscode/
+*.log
+.rivendell/
+mcp-shim/target/
+app-icon.png

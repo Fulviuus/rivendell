@@ -1,0 +1,268 @@
+@import "tailwindcss";
+
+/*
+ * Theme is driven by `data-theme` on <html>, set before first paint in main.tsx.
+ * Tailwind's `dark:` variant is rebound to it so component code can express both
+ * themes inline instead of duplicating class lists.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Tokens are named for their job, not their darkness — `canvas` is the content
+ * background in both themes even though it is near-white in one and near-black
+ * in the other. `@theme inline` is what lets the utilities resolve the swapped
+ * variable at runtime rather than baking in one theme's value.
+ */
+@theme inline {
+  --font-sans: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --color-canvas: var(--c-canvas);
+  --color-sidebar: var(--c-sidebar);
+  --color-list: var(--c-list);
+  --color-card: var(--c-card);
+  --color-modal: var(--c-modal);
+  --color-field: var(--c-field);
+  --color-code: var(--c-code);
+  --color-chip: var(--c-chip);
+
+  --color-hover: var(--c-hover);
+  --color-line: var(--c-line);
+  --color-line-soft: var(--c-line-soft);
+
+  --color-strong: var(--c-strong);
+  --color-body: var(--c-body);
+  --color-soft: var(--c-soft);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+
+  --color-accent: var(--c-accent);
+  --color-accent-text: var(--c-accent-text);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-on-accent: var(--c-on-accent);
+
+  --shadow-card: var(--s-card);
+  --shadow-pop: var(--s-pop);
+}
+
+:root,
+:root[data-theme="light"] {
+  --c-canvas: #f3f5f8;
+  --c-sidebar: #e8ebf1;
+  --c-list: #eef0f5;
+  --c-card: #ffffff;
+  --c-modal: #ffffff;
+  --c-field: #ffffff;
+  --c-code: #f4f6fa;
+  --c-chip: #e6e9f0;
+
+  --c-hover: rgba(20, 28, 48, 0.055);
+  --c-line: #d9dee7;
+  --c-line-soft: #e6e9f0;
+
+  --c-strong: #0f1420;
+  --c-body: #2a3141;
+  --c-soft: #4a5265;
+  --c-muted: #6c7488;
+  --c-faint: #949bad;
+
+  --c-accent: #3f4bb8;
+  --c-accent-text: #3a44a8;
+  --c-accent-soft: rgba(63, 75, 184, 0.09);
+  --c-on-accent: #ffffff;
+
+  --s-card: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --s-pop: 0 12px 32px -8px rgba(16, 24, 40, 0.22);
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --c-canvas: #0e0f15;
+  --c-sidebar: #14161f;
+  --c-list: #101219;
+  --c-card: #191c26;
+  --c-modal: #1b1e29;
+  --c-field: #12141c;
+  --c-code: #101219;
+  --c-chip: #232734;
+
+  --c-hover: rgba(255, 255, 255, 0.055);
+  --c-line: #272b38;
+  --c-line-soft: #1e2029;
+
+  --c-strong: #edeff6;
+  --c-body: #c9cedb;
+  --c-soft: #9ba2b5;
+  --c-muted: #7b8294;
+  --c-faint: #5d6374;
+
+  --c-accent: #7d8bf0;
+  --c-accent-text: #a6b1ff;
+  --c-accent-soft: rgba(125, 139, 240, 0.14);
+  --c-on-accent: #0e0f15;
+
+  --s-card: none;
+  --s-pop: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/*
+ * Everything below goes in a layer, and that is load-bearing rather than
+ * tidiness: unlayered CSS outranks every @layer, so a bare
+ * `button { font: inherit; color: inherit }` here silently beat Tailwind's
+ * utilities and left every button ignoring its text colour and size. Tailwind's
+ * own preflight already gives form controls `font: inherit`, so we do not
+ * restate it.
+ */
+@layer base {
+  * {
+    min-width: 0;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-canvas);
+    color: var(--c-body);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  textarea {
+    resize: vertical;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--c-faint);
+    opacity: 0.5;
+    border-radius: 6px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--c-muted);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /*
+   * The title bar is an overlay, so the top strips double as the drag handle.
+   * Dragging comes from the `data-tauri-drag-region` attribute, which Tauri
+   * handles natively — `-webkit-app-region` is an Electron property and does
+   * nothing in WKWebView. This class only stops the strip behaving like text.
+   */
+  .titlebar-drag {
+    user-select: none;
+    cursor: default;
+  }
+}
+
+@layer components {
+  /* Markdown-ish rendering for message bodies. */
+  .prose-msg {
+    line-height: 1.62;
+    word-break: break-word;
+    color: var(--c-body);
+  }
+  .prose-msg p {
+    margin: 0 0 0.7em;
+  }
+  .prose-msg p:last-child {
+    margin-bottom: 0;
+  }
+  .prose-msg ul,
+  .prose-msg ol {
+    margin: 0 0 0.7em;
+    padding-left: 1.3em;
+  }
+  .prose-msg li {
+    margin: 0.15em 0;
+  }
+  .prose-msg h1,
+  .prose-msg h2,
+  .prose-msg h3 {
+    font-size: 1em;
+    font-weight: 650;
+    margin: 1.1em 0 0.45em;
+    color: var(--c-strong);
+  }
+  .prose-msg h1:first-child,
+  .prose-msg h2:first-child,
+  .prose-msg h3:first-child {
+    margin-top: 0;
+  }
+  .prose-msg strong {
+    color: var(--c-strong);
+    font-weight: 620;
+  }
+  .prose-msg code {
+    font-family: var(--font-mono);
+    font-size: 0.87em;
+    background: var(--c-code);
+    border: 1px solid var(--c-line);
+    border-radius: 4px;
+    padding: 0.08em 0.35em;
+    color: var(--c-strong);
+  }
+  .prose-msg pre {
+    background: var(--c-code);
+    border: 1px solid var(--c-line);
+    border-radius: 8px;
+    padding: 0.75rem 0.9rem;
+    overflow-x: auto;
+    margin: 0 0 0.7em;
+  }
+  .prose-msg pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 0.86em;
+    line-height: 1.55;
+  }
+  .prose-msg blockquote {
+    border-left: 2px solid var(--c-line);
+    padding-left: 0.85em;
+    margin: 0 0 0.7em;
+    color: var(--c-muted);
+  }
+  .prose-msg a {
+    color: var(--c-accent-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .prose-msg hr {
+    border: 0;
+    border-top: 1px solid var(--c-line);
+    margin: 1em 0;
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 1.8s ease-in-out infinite;
+}

@@ -1,0 +1,180 @@
+export type Role = "CODER" | "ASSISTANT" | "HUMAN";
+
+export type ThreadStatus =
+  | "OPEN"
+  | "AWAITING_REPLIES"
+  | "NEEDS_CODER"
+  | "RESOLVED"
+  | "BLOCKED"
+  | "WONTFIX";
+
+export interface Project {
+  id: number;
+  name: string;
+  folder_path: string;
+  git_remote: string | null;
+  created_at: string;
+}
+
+export interface Room {
+  id: number;
+  project_id: number;
+  project_name: string;
+  folder_path: string;
+  name: string;
+  purpose: string;
+  paused: boolean;
+  max_replies_per_agent: number;
+  max_thread_messages: number;
+  max_concurrent_runs: number;
+  cost_cap_usd: number;
+  open_threads: number;
+  created_at: string;
+}
+
+export interface AgentProfile {
+  id: number;
+  key: string;
+  label: string;
+  icon: string;
+  launch_cmd: string;
+  launch_args: string;
+  mcp_install_mode: string;
+  notes: string;
+  builtin: boolean;
+}
+
+export interface Agent {
+  id: number;
+  room_id: number;
+  name: string;
+  role: Role;
+  profile_id: number | null;
+  profile_key: string | null;
+  profile_label: string | null;
+  icon: string;
+  color: string;
+  key_preview: string | null;
+  auto_dispatch: boolean;
+  system_note: string;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface Tag {
+  key: string;
+  label: string;
+  color: string;
+  instruction: string;
+  requires_verdict: boolean;
+  verdict_options: string[];
+  default_quorum: number;
+  builtin: boolean;
+}
+
+export interface ThreadContextItem {
+  id: number;
+  kind: string;
+  path: string | null;
+  start_line: number | null;
+  end_line: number | null;
+  content: string;
+}
+
+export interface Message {
+  id: number;
+  thread_id: number;
+  agent_id: number;
+  agent_name: string;
+  agent_role: Role;
+  icon: string;
+  color: string;
+  body: string;
+  verdict: string | null;
+  severity: string | null;
+  refs: { path?: string; line?: number; note?: string }[];
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  created_at: string;
+}
+
+export interface ThreadSummary {
+  id: number;
+  room_id: number;
+  room_name: string;
+  title: string;
+  tag: string;
+  status: ThreadStatus;
+  author_agent_id: number;
+  author_name: string;
+  author_icon: string;
+  author_color: string;
+  quorum: number;
+  reply_count: number;
+  responder_count: number;
+  cost_usd: number;
+  git_ref: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
+export interface AgentRun {
+  id: number;
+  thread_id: number;
+  agent_id: number;
+  agent_name: string;
+  status: "RUNNING" | "EXITED" | "FAILED" | "KILLED";
+  pid: number | null;
+  exit_code: number | null;
+  command: string;
+  log: string;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export interface ThreadDetail extends ThreadSummary {
+  body: string;
+  git_dirty: boolean;
+  resolution_summary: string | null;
+  export_path: string | null;
+  context: ThreadContextItem[];
+  mentions: number[];
+  messages: Message[];
+  runs: AgentRun[];
+}
+
+export interface NewAgentKey {
+  agent_id: number;
+  api_key: string;
+  mcp_json: string;
+  claude_cli: string;
+  shim_json: string;
+}
+
+export interface EventNotice {
+  seq: number;
+  room_id: number | null;
+  thread_id: number | null;
+  kind: string;
+}
+
+export interface ContextInput {
+  kind: "file" | "diff" | "note";
+  path?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  content?: string | null;
+}
+
+export const STATUS_LABEL: Record<ThreadStatus, string> = {
+  OPEN: "Open",
+  AWAITING_REPLIES: "Awaiting replies",
+  NEEDS_CODER: "Needs you",
+  RESOLVED: "Resolved",
+  BLOCKED: "Blocked",
+  WONTFIX: "Won't fix",
+};
+
+export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] as const;
