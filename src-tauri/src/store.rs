@@ -206,7 +206,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT r.id,r.project_id,p.name,p.folder_path,r.name,r.purpose,r.paused,
-                    r.max_replies_per_agent,r.max_thread_messages,
+                    r.max_replies_per_agent,r.max_thread_messages,r.response_timeout_secs,
                     r.cost_cap_usd,r.quorum_mode,r.quorum_fixed,r.created_at,
                     (SELECT COUNT(*) FROM threads t
                       WHERE t.room_id=r.id AND t.status NOT IN ('RESOLVED','WONTFIX'))
@@ -225,11 +225,12 @@ impl Store {
                     paused: r.get::<_, i64>(6)? != 0,
                     max_replies_per_agent: r.get(7)?,
                     max_thread_messages: r.get(8)?,
-                    cost_cap_usd: r.get(9)?,
-                    quorum_mode: r.get(10)?,
-                    quorum_fixed: r.get(11)?,
-                    created_at: r.get(12)?,
-                    open_threads: r.get(13)?,
+                    response_timeout_secs: r.get(9)?,
+                    cost_cap_usd: r.get(10)?,
+                    quorum_mode: r.get(11)?,
+                    quorum_fixed: r.get(12)?,
+                    created_at: r.get(13)?,
+                    open_threads: r.get(14)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -262,6 +263,7 @@ impl Store {
             ("purpose", "purpose"),
             ("paused", "paused"),
             ("max_replies_per_agent", "max_replies_per_agent"),
+            ("response_timeout_secs", "response_timeout_secs"),
             ("max_thread_messages", "max_thread_messages"),
             ("cost_cap_usd", "cost_cap_usd"),
             ("quorum_mode", "quorum_mode"),
@@ -661,6 +663,150 @@ impl Store {
         .ok_or_else(|| Error::NotFound(format!("agent {agent_id}")))
     }
 
+
+    /// How many assistants this thread is still reasonably waiting on.
+    ///
+    /// An assistant counts if it has already replied, or has claimed the thread
+    /// recently enough to still look alive. Before the room's timeout elapses
+    /// everyone counts, because an agent that has not spoken yet may simply not
+    /// have looked. After it, silence is taken as "not going to happen" and the
+    /// thread stops holding a slot open — otherwise a single agent that is not
+    /// running would strand it for ever.
+    fn expected_responders(conn: &Connection, thread_id: i64) -> Result<i64> {
+        let (room_id, created_at, timeout): (i64, String, i64) = conn.query_row(
+            "SELECT t.room_id, t.created_at, r.response_timeout_secs
+             FROM threads t JOIN rooms r ON r.id=t.room_id WHERE t.id=?1",
+            params![thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(timeout.max(0))).to_rfc3339();
+        let within_grace = created_at.as_str() > cutoff.as_str();
+
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM agents a
+             WHERE a.room_id=?1 AND a.role='ASSISTANT' AND a.revoked_at IS NULL
+               AND (EXISTS(SELECT 1 FROM thread_mentions m
+                            WHERE m.thread_id=?2 AND m.agent_id=a.id)
+                    OR NOT EXISTS(SELECT 1 FROM thread_mentions m WHERE m.thread_id=?2))
+               AND (?4
+                    OR EXISTS(SELECT 1 FROM messages ms
+                               WHERE ms.thread_id=?2 AND ms.agent_id=a.id)
+                    OR EXISTS(SELECT 1 FROM thread_claims c
+                               WHERE c.thread_id=?2 AND c.agent_id=a.id
+                                 AND c.claimed_at > ?3))",
+            params![room_id, thread_id, cutoff, within_grace as i64],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The stored quorum, capped by who is still plausibly going to answer.
+    fn effective_quorum(conn: &Connection, thread_id: i64) -> Result<i64> {
+        let stored: i64 = conn.query_row(
+            "SELECT quorum FROM threads WHERE id=?1",
+            params![thread_id],
+            |r| r.get(0),
+        )?;
+        Ok(stored.min(Self::expected_responders(conn, thread_id)?))
+    }
+
+    /// An assistant announcing that it has picked a thread up. Re-claiming
+    /// refreshes the heartbeat, so a slow job keeps its slot.
+    pub fn claim_thread(&self, actor: &AgentCtx, thread_id: i64, note: &str) -> Result<()> {
+        let conn = self.lock();
+        let (room_id, status): (i64, String) = conn
+            .query_row(
+                "SELECT room_id, status FROM threads WHERE id=?1",
+                params![thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))?;
+        if room_id != actor.room_id {
+            return Err(Error::Forbidden("that thread is in another room".into()));
+        }
+        if is_terminal(&status) {
+            return Err(Error::Forbidden(format!("thread {thread_id} is {status}")));
+        }
+
+        conn.execute(
+            "INSERT INTO thread_claims(thread_id,agent_id,note,claimed_at)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(thread_id,agent_id) DO UPDATE SET
+               note=excluded.note, claimed_at=excluded.claimed_at",
+            params![thread_id, actor.id, note.trim(), now()],
+        )?;
+        let notice = Self::append_event(
+            &conn,
+            Some(room_id),
+            Some(thread_id),
+            "thread.claimed",
+            Some(actor.id),
+            serde_json::json!({"note": note.trim()}),
+        )?;
+        drop(conn);
+        self.publish(notice);
+        Ok(())
+    }
+
+    /// Threads whose window has closed without quorum being met are handed back
+    /// to the coder. Runs on a timer so this happens without anyone asking.
+    pub fn sweep_stalled_threads(&self) -> Result<usize> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM threads WHERE status='AWAITING_REPLIES'",
+        )?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+
+        let mut notices = Vec::new();
+        for id in ids {
+            let responders: i64 = conn.query_row(
+                "SELECT COUNT(DISTINCT m.agent_id) FROM messages m
+                 JOIN agents a ON a.id=m.agent_id
+                 WHERE m.thread_id=?1 AND a.role='ASSISTANT'",
+                params![id],
+                |r| r.get(0),
+            )?;
+            // No `.max(1)` here, unlike the reply path: when nobody is expected
+            // any more, effective quorum is 0 and a thread with no replies at
+            // all still has to come back to the coder.
+            if responders < Self::effective_quorum(&conn, id)? {
+                continue;
+            }
+            let room: Option<i64> = conn
+                .query_row("SELECT room_id FROM threads WHERE id=?1", params![id], |r| r.get(0))
+                .optional()?;
+            conn.execute(
+                "UPDATE threads SET status='NEEDS_CODER', updated_at=?1 WHERE id=?2",
+                params![now(), id],
+            )?;
+            notices.push(Self::append_event(
+                &conn,
+                room,
+                Some(id),
+                "thread.status",
+                None,
+                serde_json::json!({
+                    "status": "NEEDS_CODER",
+                    "reason": if responders == 0 {
+                        "nobody picked this up before the room's timeout"
+                    } else {
+                        "the assistants that were going to answer have answered"
+                    },
+                }),
+            )?);
+        }
+        drop(conn);
+        let n = notices.len();
+        for notice in notices {
+            self.publish(notice);
+        }
+        Ok(n)
+    }
+
     // ----------------------------------------------------------- threads ---
 
     pub fn create_thread(&self, author: &AgentCtx, input: NewThread) -> Result<i64> {
@@ -1027,6 +1173,27 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let mut stmt = conn.prepare(
+            "SELECT c.agent_id, a.name, a.color,
+                    COALESCE(p.icon, 'robot'), c.note, c.claimed_at
+             FROM thread_claims c
+             JOIN agents a ON a.id=c.agent_id
+             LEFT JOIN agent_profiles p ON p.id=a.profile_id
+             WHERE c.thread_id=?1 ORDER BY c.claimed_at",
+        )?;
+        let claims = stmt
+            .query_map(params![thread_id], |r| {
+                Ok(ThreadClaim {
+                    agent_id: r.get(0)?,
+                    agent_name: r.get(1)?,
+                    color: r.get(2)?,
+                    icon: r.get(3)?,
+                    note: r.get(4)?,
+                    claimed_at: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         let mut stmt =
             conn.prepare("SELECT agent_id FROM thread_mentions WHERE thread_id=?1")?;
         let mentions = stmt
@@ -1074,6 +1241,7 @@ impl Store {
             export_path,
             context,
             mentions,
+            claims,
             messages,
         })
     }
@@ -1227,22 +1395,13 @@ impl Store {
                 params![input.thread_id],
                 |r| r.get(0),
             )?;
-            // Clamped again here, not just at creation: an assistant may have
-            // been deleted or revoked since, and a target that can no longer be
-            // reached would strand the thread.
-            let eligible: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM agents a
-                 WHERE a.room_id=?1 AND a.role='ASSISTANT' AND a.revoked_at IS NULL
-                   AND (EXISTS(SELECT 1 FROM thread_mentions m
-                                WHERE m.thread_id=?2 AND m.agent_id=a.id)
-                        OR NOT EXISTS(SELECT 1 FROM thread_mentions m
-                                       WHERE m.thread_id=?2))",
-                params![room_id, input.thread_id],
-                |r| r.get(0),
-            )?;
+            // Recomputed rather than trusting the stored quorum: assistants
+            // can be removed, and ones that never showed up stop counting once
+            // the room's timeout has passed.
+            //
             // `.max(1)` so a reply always counts for something even when the
             // tag asks for no replies at all.
-            if responders >= quorum.min(eligible).max(1) {
+            if responders >= Self::effective_quorum(&tx, input.thread_id)?.max(1) {
                 "NEEDS_CODER"
             } else {
                 "AWAITING_REPLIES"

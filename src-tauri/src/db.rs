@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS rooms (
   purpose               TEXT NOT NULL DEFAULT '',
   paused                INTEGER NOT NULL DEFAULT 0,
   max_replies_per_agent INTEGER NOT NULL DEFAULT 6,
+  -- How long a thread keeps a slot open for an assistant that has shown no
+  -- sign of life. Claiming resets the clock; silence past this means the
+  -- thread stops counting on that agent.
+  response_timeout_secs INTEGER NOT NULL DEFAULT 300,
   max_thread_messages   INTEGER NOT NULL DEFAULT 60,
   max_concurrent_runs   INTEGER NOT NULL DEFAULT 3,
   cost_cap_usd          REAL    NOT NULL DEFAULT 5.0,
@@ -122,6 +126,16 @@ CREATE TABLE IF NOT EXISTS thread_context (
 );
 CREATE INDEX IF NOT EXISTS idx_ctx_thread ON thread_context(thread_id);
 
+-- "I am working on this." Doubles as a heartbeat: a long-running assistant
+-- re-claims to keep the thread waiting for it.
+CREATE TABLE IF NOT EXISTS thread_claims (
+  thread_id  INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  note       TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT NOT NULL,
+  PRIMARY KEY (thread_id, agent_id)
+);
+
 CREATE TABLE IF NOT EXISTS thread_mentions (
   thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
   agent_id  INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -213,6 +227,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("agents", "color", "TEXT NOT NULL DEFAULT ''"),
         ("rooms", "quorum_mode", "TEXT NOT NULL DEFAULT 'all'"),
         ("rooms", "quorum_fixed", "INTEGER NOT NULL DEFAULT 1"),
+        ("rooms", "response_timeout_secs", "INTEGER NOT NULL DEFAULT 300"),
     ] {
         let exists: bool = conn
             .prepare(&format!(

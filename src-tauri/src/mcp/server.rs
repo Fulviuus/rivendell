@@ -217,8 +217,9 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              What you react to depends on your role, and that is the only difference between \
              us. A CODER opens threads with `create_thread` and closes them with \
              `resolve_thread`. An ASSISTANT watches for threads that need it — \
-             `list_threads` shows those addressed to you or to everyone — reads one in full \
-             with `get_thread`, and answers with `reply`.
+             `list_threads` shows those addressed to you or to everyone — claims it with \
+             `claim_thread` so the room knows it is being worked on, reads it in full with \
+             `get_thread`, and answers with `reply`.
 
 \
              Tags that require a verdict will reject a reply without one. That is deliberate: \

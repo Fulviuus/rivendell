@@ -22,6 +22,8 @@ pub struct Room {
     pub paused: bool,
     pub max_replies_per_agent: i64,
     pub max_thread_messages: i64,
+    /// Seconds a thread waits on an assistant that has shown no sign of life.
+    pub response_timeout_secs: i64,
     pub cost_cap_usd: f64,
     /// "all" — every assistant that can answer; "fixed" — `quorum_fixed`.
     pub quorum_mode: String,
@@ -82,6 +84,17 @@ pub struct ThreadContextItem {
     pub content: String,
 }
 
+/// An assistant saying "I have picked this up". Re-claiming is a heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadClaim {
+    pub agent_id: i64,
+    pub agent_name: String,
+    pub color: String,
+    pub icon: String,
+    pub note: String,
+    pub claimed_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: i64,
@@ -135,6 +148,7 @@ pub struct ThreadDetail {
     pub export_path: Option<String>,
     pub context: Vec<ThreadContextItem>,
     pub mentions: Vec<i64>,
+    pub claims: Vec<ThreadClaim>,
     pub messages: Vec<Message>,
 }
 

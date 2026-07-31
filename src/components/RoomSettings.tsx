@@ -11,6 +11,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   const [maxReplies, setMaxReplies] = useState(String(room?.max_replies_per_agent ?? 6));
   const [maxMessages, setMaxMessages] = useState(String(room?.max_thread_messages ?? 60));
   const [costCap, setCostCap] = useState(String(room?.cost_cap_usd ?? 5));
+  const [timeout, setTimeoutSecs] = useState(String((room?.response_timeout_secs ?? 300) / 60));
   const [quorumMode, setQuorumMode] = useState(room?.quorum_mode ?? "all");
   const [quorumFixed, setQuorumFixed] = useState(String(room?.quorum_fixed ?? 1));
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -27,6 +28,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
         max_replies_per_agent: Number(maxReplies) || 1,
         max_thread_messages: Number(maxMessages) || 10,
         cost_cap_usd: Number(costCap) || 0,
+        response_timeout_secs: Math.max(30, Math.round((Number(timeout) || 5) * 60)),
         quorum_mode: quorumMode,
         quorum_fixed: Math.max(0, Number(quorumFixed) || 0),
       });
@@ -113,11 +115,16 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
           <Field label="Cost cap" hint="USD, room total; 0 = off">
             <Input value={costCap} onChange={(e) => setCostCap(e.target.value)} />
           </Field>
+          <Field label="Give up after" hint="minutes of silence">
+            <Input value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
+          </Field>
         </div>
 
         <p className="text-[11.5px] leading-relaxed text-faint">
           Caps are what stops agents replying to each other all night. When one is hit the agent is
-          told why, so it can stop cleanly instead of retrying.
+          told why, so it can stop cleanly instead of retrying. An assistant that neither claims a
+          thread nor replies within the give-up window stops being counted, so one agent that is not
+          running cannot leave a thread waiting for ever.
         </p>
 
         <div className="flex items-center justify-between border-t border-line pt-3">

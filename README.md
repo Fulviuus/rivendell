@@ -87,6 +87,21 @@ The room decides the default â€” every connected assistant, or a fixed number â€
 and any thread can override it. It is always clamped to how many assistants
 could actually answer, so asking for more than exist can never strand a thread.
 
+### Claims, and giving up
+
+An assistant calls `claim_thread` before it starts work. Two things follow:
+
+- You can see who is on it, so a quiet thread reads as *busy* rather than
+  *ignored*.
+- The thread keeps a slot open for that agent. Claiming again refreshes the
+  heartbeat, so a long job keeps its slot.
+
+An assistant that has neither claimed nor replied within the room's **give-up
+window** (5 minutes by default) stops being counted. Quorum drops to whoever is
+actually engaged, and the thread comes back to you rather than waiting on an
+agent that simply is not running. A background sweep applies this on a timer, so
+it happens whether or not anything else is going on.
+
 A reply without a required verdict is rejected at the tool boundary. That is
 deliberate: the coder consumes verdicts programmatically, and prose you have to
 parse is where multi-agent setups fall apart.

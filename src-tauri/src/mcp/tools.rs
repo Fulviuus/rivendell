@@ -61,6 +61,22 @@ pub fn common_tools() -> Vec<Value> {
             true,
         ),
         tool(
+            "claim_thread",
+            "Say that you have picked a thread up and are working on it. Do this *before* you \
+             start investigating, not after: it tells the coder someone is on it, and it stops the \
+             thread timing you out. If the work runs long, call it again — each call refreshes the \
+             heartbeat. A thread stops waiting for an assistant that has neither claimed nor \
+             replied within the room's timeout.",
+            obj(
+                json!({
+                    "thread_id": {"type": "integer"},
+                    "note": {"type": "string", "description": "Optional, shown in the UI — e.g. 'reading the diff' or 'reproducing locally'."}
+                }),
+                &["thread_id"],
+            ),
+            false,
+        ),
+        tool(
             "reply",
             "Post a reply. Tags such as ADVERSARIAL_REVIEW and SECURITY_REVIEW require a verdict \
              and your reply will be rejected without one — the coder consumes verdicts \
@@ -260,6 +276,18 @@ pub async fn call(
                 return Err(Error::Forbidden("that thread is in another room".into()));
             }
             Ok(render_thread(store, &d)?)
+        }
+        "claim_thread" => {
+            let id = int_arg(&args, "thread_id")?;
+            store.claim_thread(
+                ctx,
+                id,
+                args.get("note").and_then(|v| v.as_str()).unwrap_or(""),
+            )?;
+            Ok(format!(
+                "Claimed thread {id}. The room can see you are on it. Call claim_thread again if \
+                 this takes a while, then post your reply."
+            ))
         }
         "reply" => {
             let input: NewReply = serde_json::from_value(args)

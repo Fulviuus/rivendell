@@ -39,6 +39,8 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 ureq = { version = "2", default-features = false }
+# Integration tests reach into the database to age rows rather than sleeping.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [features]
 # this feature is used for production builds or when a dev server is not specified,

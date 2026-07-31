@@ -57,6 +57,56 @@ fn rpc(url: &str, key: Option<&str>, method: &str, params: Value) -> (u16, Value
     }
 }
 
+/// Ages a thread so the grace window has demonstrably passed, instead of
+/// sleeping through it.
+fn backdate_thread(dir: &std::path::Path, thread_id: i64, seconds: i64) {
+    let when = (chrono_now() - seconds).to_string();
+    let conn = rusqlite::Connection::open(dir.join(".db/rivendell.db")).unwrap();
+    conn.execute(
+        "UPDATE threads SET created_at=?1 WHERE id=?2",
+        rusqlite::params![iso(when.parse().unwrap()), thread_id],
+    )
+    .unwrap();
+}
+
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// Minimal RFC3339 in UTC, matching what the store writes.
+fn iso(unix: i64) -> String {
+    let days = unix / 86400;
+    let rem = unix % 86400;
+    let (mut y, mut d) = (1970, days);
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let len = if leap { 366 } else { 365 };
+        if d < len {
+            break;
+        }
+        d -= len;
+        y += 1;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0;
+    while d >= months[m] {
+        d -= months[m];
+        m += 1;
+    }
+    format!(
+        "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}+00:00",
+        m + 1,
+        d + 1,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
 fn call(url: &str, key: &str, tool: &str, args: Value) -> (bool, String) {
     let (_, body) = rpc(url, Some(key), "tools/call", json!({"name": tool, "arguments": args}));
     let result = &body["result"];
@@ -585,6 +635,147 @@ async fn both_roles_share_one_loop() {
         h.store.thread_detail(thread_id).unwrap().summary.status,
         "NEEDS_CODER"
     );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// An assistant that never shows up must not hold a thread open for ever, and
+/// one that claims must keep its slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_assistant_stops_being_waited_for() {
+    let h = boot("timeout").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let (_, present_key) = h
+        .store
+        .create_agent(room, "present", "ASSISTANT", None, "", "")
+        .unwrap();
+    let (_, slow_key) = h
+        .store
+        .create_agent(room, "slow", "ASSISTANT", None, "", "")
+        .unwrap();
+    // Third assistant that will never connect at all.
+    h.store
+        .create_agent(room, "absent", "ASSISTANT", None, "", "")
+        .unwrap();
+
+    let (_, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Three-way", "body": "…", "tag": "HELP_REQUEST"}),
+    );
+    let thread_id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.quorum,
+        3,
+        "default is every connected assistant"
+    );
+
+    // `slow` says it is on it; `absent` says nothing.
+    let (is_err, text) = call(
+        &h.url,
+        &slow_key,
+        "claim_thread",
+        json!({"thread_id": thread_id, "note": "reproducing locally"}),
+    );
+    assert!(!is_err, "{text}");
+    let d = h.store.thread_detail(thread_id).unwrap();
+    assert_eq!(d.claims.len(), 1);
+    assert_eq!(d.claims[0].note, "reproducing locally");
+
+    // One reply, inside the grace window: still waiting on the other two.
+    let (is_err, text) = call(
+        &h.url,
+        &present_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "one", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "{text}");
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.status,
+        "AWAITING_REPLIES",
+        "inside the window an agent that has not spoken may still turn up"
+    );
+
+    // Age the thread past its window. `absent` never claimed and never
+    // replied, so it stops counting; `slow` holds its slot because its claim
+    // is recent.
+    backdate_thread(&h.dir, thread_id, 600);
+    let swept = h.store.sweep_stalled_threads().unwrap();
+    assert_eq!(swept, 0, "still waiting on the assistant that claimed");
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.status,
+        "AWAITING_REPLIES"
+    );
+
+    // Once the claimant answers too, nobody is left to wait for.
+    let (is_err, text) = call(
+        &h.url,
+        &slow_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "two", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "{text}");
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.status,
+        "NEEDS_CODER",
+        "the absent assistant must not keep the thread open"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// A thread nobody picks up at all still comes back to the coder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_thread_nobody_touches_comes_back() {
+    let h = boot("nobody").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    h.store
+        .create_agent(room, "ghost", "ASSISTANT", None, "", "")
+        .unwrap();
+
+    let (_, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Anyone?", "body": "…", "tag": "HELP_REQUEST"}),
+    );
+    let thread_id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+
+    // Within the window the sweep leaves it alone.
+    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 0);
+    assert_eq!(
+        h.store.thread_detail(thread_id).unwrap().summary.status,
+        "AWAITING_REPLIES"
+    );
+
+    backdate_thread(&h.dir, thread_id, 600);
+    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 1);
+    let d = h.store.thread_detail(thread_id).unwrap();
+    assert_eq!(d.summary.status, "NEEDS_CODER");
+    assert_eq!(d.summary.reply_count, 0, "handed back with nothing, not silently resolved");
 
     let _ = std::fs::remove_dir_all(&h.dir);
 }

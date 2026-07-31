@@ -311,6 +311,18 @@ pub fn set_thread_status(
 // ---------------------------------------------------------------- search ---
 
 #[tauri::command]
+pub fn claim_thread(
+    state: State<'_, AppState>,
+    thread_id: i64,
+    note: String,
+    as_agent_id: Option<i64>,
+) -> Result<()> {
+    let detail = state.store.thread_detail(thread_id)?;
+    let ctx = actor(&state.store, detail.summary.room_id, as_agent_id)?;
+    state.store.claim_thread(&ctx, thread_id, &note)
+}
+
+#[tauri::command]
 pub fn search(
     state: State<'_, AppState>,
     room_id: Option<i64>,

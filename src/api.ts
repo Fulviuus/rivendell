@@ -88,6 +88,9 @@ export const api = {
   setThreadStatus: (threadId: number, status: ThreadStatus) =>
     invoke<void>("set_thread_status", { threadId, status, asAgentId: null }),
 
+  claimThread: (threadId: number, note = "") =>
+    invoke<void>("claim_thread", { threadId, note, asAgentId: null }),
+
   search: (roomId: number | null, query: string) =>
     invoke<{ kind: string; ref_id: number; title: string; excerpt: string }[]>("search", {
       roomId,

@@ -17,10 +17,11 @@ import {
   VerdictChip,
   agentTone,
 } from "../ui";
-import type { Message, ThreadContextItem } from "../types";
+import type { Message, ThreadContextItem, ThreadDetail } from "../types";
 
 export function ThreadView() {
-  const { thread, tags, agents, notify, refreshThread } = useStore();
+  const { thread, tags, agents, rooms, roomId, notify, refreshThread } = useStore();
+  const room = rooms.find((r) => r.id === roomId);
   const [composing, setComposing] = useState("");
   const [resolving, setResolving] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -159,6 +160,8 @@ export function ThreadView() {
           ))}
         </section>
 
+        <WorkingOn thread={thread} timeoutSecs={room?.response_timeout_secs ?? 300} />
+
         {thread.resolution_summary && (
           <div className="mt-5 rounded-xl border-l-2 border-l-emerald-400 bg-emerald-50 p-3.5 ring-1 ring-emerald-200 dark:border-l-emerald-500 dark:bg-emerald-500/8 dark:ring-emerald-500/20">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11.5px] font-semibold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
@@ -212,6 +215,49 @@ export function ThreadView() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Who has said "I'm on it". A claim goes quiet after the room's timeout, at
+ * which point the thread stops counting on that assistant — so a stale claim is
+ * worth showing differently rather than hiding.
+ */
+function WorkingOn({
+  thread,
+  timeoutSecs,
+}: {
+  thread: ThreadDetail;
+  timeoutSecs: number;
+}) {
+  const replied = new Set(thread.messages.map((m) => m.agent_id));
+  const open = thread.claims.filter((c) => !replied.has(c.agent_id));
+  if (open.length === 0) return null;
+
+  const cutoff = Date.now() - timeoutSecs * 1000;
+  return (
+    <div className="mt-4 space-y-1.5">
+      {open.map((c) => {
+        const stale = new Date(c.claimed_at).getTime() < cutoff;
+        return (
+          <div key={c.agent_id} className="flex items-center gap-2 text-[12.5px]">
+            <Avatar name={c.agent_name} icon={c.icon} color={c.color} size={20} />
+            <span className="font-medium text-soft">{c.agent_name}</span>
+            {stale ? (
+              <span className="text-faint">
+                went quiet — the thread has stopped waiting for it
+              </span>
+            ) : (
+              <>
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+                <span className="text-muted">{c.note || "working on it"}</span>
+              </>
+            )}
+            <span className="text-[11px] text-faint">{ago(c.claimed_at)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

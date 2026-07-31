@@ -26,6 +26,8 @@ export interface Room {
   paused: boolean;
   max_replies_per_agent: number;
   max_thread_messages: number;
+  /** Seconds a thread waits on an assistant that has shown no sign of life. */
+  response_timeout_secs: number;
   cost_cap_usd: number;
   /** "all" — every assistant that can answer; "fixed" — quorum_fixed. */
   quorum_mode: "all" | "fixed";
@@ -100,6 +102,15 @@ export interface Message {
   created_at: string;
 }
 
+export interface ThreadClaim {
+  agent_id: number;
+  agent_name: string;
+  color: string;
+  icon: string;
+  note: string;
+  claimed_at: string;
+}
+
 export interface ThreadSummary {
   id: number;
   room_id: number;
@@ -137,6 +148,7 @@ export interface ThreadDetail extends ThreadSummary {
   export_path: string | null;
   context: ThreadContextItem[];
   mentions: number[];
+  claims: ThreadClaim[];
   messages: Message[];
 }
 
