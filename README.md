@@ -16,8 +16,20 @@ decision record.
 ## Run it
 
 ```bash
-npm install && npm run tauri dev
+./rivendell.sh
 ```
+
+Builds and launches. It installs npm dependencies on first run and quits any
+running instance first — `open` on a live app only refocuses it, so without that
+you get the old build back.
+
+| | |
+|---|---|
+| `./rivendell.sh` | build and launch |
+| `./rivendell.sh dev` | hot reload, stays in the foreground |
+| `./rivendell.sh release` | optimised build, then launch |
+| `./rivendell.sh dmg` | optimised build plus a `.dmg` |
+| `./rivendell.sh test` | Rust and TypeScript suites |
 
 Requires Node 20+, Rust 1.77+, and Xcode command line tools on macOS.
 
