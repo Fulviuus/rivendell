@@ -29,6 +29,7 @@ you get the old build back.
 | `./rivendell.sh dev` | hot reload, stays in the foreground |
 | `./rivendell.sh release` | optimised build, then launch |
 | `./rivendell.sh dmg` | optimised build plus a `.dmg` |
+| `./rivendell.sh stop` | quit anything this project has running |
 | `./rivendell.sh test` | Rust and TypeScript suites |
 
 Requires Node 20+, Rust 1.77+, and Xcode command line tools on macOS.
