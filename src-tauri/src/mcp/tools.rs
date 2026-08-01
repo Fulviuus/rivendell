@@ -62,11 +62,12 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "claim_thread",
-            "Say that you have picked a thread up and are working on it. Do this *before* you \
-             start investigating, not after: it tells the coder someone is on it, and it stops the \
-             thread timing you out. If the work runs long, call it again — each call refreshes the \
-             heartbeat. A thread stops waiting for an assistant that has neither claimed nor \
-             replied within the room's timeout.",
+            "Say that you are working on a thread. Do this *before* you start investigating, not \
+             after. Once the first agent answers, a short window opens in which the rest must \
+             claim; anyone silent through it is left out and the coder proceeds without them. \
+             Claiming puts you in that set. If the work runs long, call it again — each call \
+             refreshes the heartbeat, and a claim that goes quiet is dropped so one stalled agent \
+             cannot hold the thread for ever.",
             obj(
                 json!({
                     "thread_id": {"type": "integer"},
@@ -78,7 +79,10 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "reply",
-            "Post a reply. Tags such as ADVERSARIAL_REVIEW and SECURITY_REVIEW require a verdict \
+            "Post a reply. Write `@name` to call another agent into the thread — use it when a \
+             question needs someone else's expertise rather than guessing; `list_agents` shows who \
+             is here. They are notified and get their own chance to answer. \
+             Tags such as ADVERSARIAL_REVIEW and SECURITY_REVIEW require a verdict \
              and your reply will be rejected without one — the coder consumes verdicts \
              programmatically, so choose honestly rather than hedging. Attach `refs` pointing at \
              the exact file and line for every claim you make. You have a per-thread reply budget; \
@@ -223,7 +227,7 @@ pub fn coder_tools() -> Vec<Value> {
                     "title": {"type": "string"},
                     "body": {"type": "string", "description": "Markdown. Say what you tried and what you expect, not just what is broken."},
                     "tag": {"type": "string", "description": "HELP_REQUEST, ADVERSARIAL_REVIEW, DESIGN_REVIEW, SECURITY_REVIEW, ARCHITECTURE_DECISION, SPEC_CLARIFICATION, PERF, FYI"},
-                    "mentions": {"type": "array", "items": {"type": "integer"}, "description": "Agent ids. Omit to address the whole room."},
+                    "mentions": {"type": "array", "items": {"type": "integer"}, "description": "Agent ids. Omit to address the whole room. You can also write @name in the body."},
                     "include_diff": {"type": "boolean", "description": "Snapshot the current working-tree diff onto the thread."},
                     "context": {
                         "type": "array",
@@ -236,7 +240,6 @@ pub fn coder_tools() -> Vec<Value> {
                             "content": {"type": "string", "description": "Only for kind=note."}
                         }, "required": ["kind"]}
                     },
-                    "quorum": {"type": "integer", "minimum": 0, "description": "How many distinct assistants must reply before this comes back to you. Omit to use the room default (normally every assistant that can answer). Silently clamped to the number actually reachable, so asking for more than exist cannot strand the thread."}
                 }),
                 &["title", "body", "tag"],
             ),
@@ -389,7 +392,7 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
                 "expects": t.instruction,
                 "verdicts": t.verdict_options,
                 "verdict_required": t.requires_verdict,
-                "default_quorum": t.default_quorum,
+                "expects_replies": t.expects_replies,
             })
         })
         .collect();
@@ -463,7 +466,6 @@ fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<Stri
             .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
             .unwrap_or_default(),
         context,
-        quorum: args.get("quorum").and_then(|v| v.as_i64()),
         include_diff: args
             .get("include_diff")
             .and_then(|v| v.as_bool())
@@ -574,8 +576,17 @@ fn render_thread(store: &Arc<Store>, d: &crate::models::ThreadDetail) -> Result<
     let mut out = String::new();
     out.push_str(&format!("# Thread {} — {}\n\n", s.id, s.title));
     out.push_str(&format!(
-        "**Tag** {} · **Status** {} · **Opened by** {} · **Replies** {} from {} assistant(s), quorum {}\n",
-        s.tag, s.status, s.author_name, s.reply_count, s.responder_count, s.quorum
+        "**Tag** {} · **Status** {} · **Opened by** {} · **Replies** {} from {} assistant(s){}\n",
+        s.tag,
+        s.status,
+        s.author_name,
+        s.reply_count,
+        s.responder_count,
+        if s.in_progress > 0 {
+            format!(" · {} still working", s.in_progress)
+        } else {
+            String::new()
+        }
     ));
     if let Some(g) = &s.git_ref {
         out.push_str(&format!(

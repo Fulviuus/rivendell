@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Select, Textarea } from "../ui";
+import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
 
 export function RoomSettings({ onClose }: { onClose: () => void }) {
   const { rooms, roomId, refreshRooms, selectRoom, notify } = useStore();
@@ -12,8 +12,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   const [maxMessages, setMaxMessages] = useState(String(room?.max_thread_messages ?? 60));
   const [costCap, setCostCap] = useState(String(room?.cost_cap_usd ?? 5));
   const [timeout, setTimeoutSecs] = useState(String((room?.response_timeout_secs ?? 300) / 60));
-  const [quorumMode, setQuorumMode] = useState(room?.quorum_mode ?? "all");
-  const [quorumFixed, setQuorumFixed] = useState(String(room?.quorum_fixed ?? 1));
+  const [claimWindow, setClaimWindow] = useState(String(room?.claim_window_secs ?? 120));
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -29,8 +28,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
         max_thread_messages: Number(maxMessages) || 10,
         cost_cap_usd: Number(costCap) || 0,
         response_timeout_secs: Math.max(30, Math.round((Number(timeout) || 5) * 60)),
-        quorum_mode: quorumMode,
-        quorum_fixed: Math.max(0, Number(quorumFixed) || 0),
+        claim_window_secs: Math.max(0, Number(claimWindow) || 0),
       });
       await refreshRooms();
       onClose();
@@ -82,28 +80,6 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
           <Textarea rows={2} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
         </Field>
 
-        <Field
-          label="Replies before a thread comes back to you"
-          hint="the default for new threads; each thread can override it"
-        >
-          <div className="flex gap-2">
-            <Select
-              value={quorumMode}
-              onChange={(e) => setQuorumMode(e.target.value as "all" | "fixed")}
-              className="flex-1"
-            >
-              <option value="all">Every connected assistant</option>
-              <option value="fixed">A fixed number</option>
-            </Select>
-            {quorumMode === "fixed" && (
-              <Input
-                value={quorumFixed}
-                className="w-20"
-                onChange={(e) => setQuorumFixed(e.target.value)}
-              />
-            )}
-          </div>
-        </Field>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Replies per agent" hint="per thread">
@@ -115,16 +91,20 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
           <Field label="Cost cap" hint="USD, room total; 0 = off">
             <Input value={costCap} onChange={(e) => setCostCap(e.target.value)} />
           </Field>
-          <Field label="Give up after" hint="minutes of silence">
+          <Field label="Claim window" hint="seconds after the first answer">
+            <Input value={claimWindow} onChange={(e) => setClaimWindow(e.target.value)} />
+          </Field>
+          <Field label="Drop a silent worker" hint="minutes without a reply">
             <Input value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
           </Field>
         </div>
 
         <p className="text-[11.5px] leading-relaxed text-faint">
           Caps are what stops agents replying to each other all night. When one is hit the agent is
-          told why, so it can stop cleanly instead of retrying. An assistant that neither claims a
-          thread nor replies within the give-up window stops being counted, so one agent that is not
-          running cannot leave a thread waiting for ever.
+          told why, so it can stop cleanly instead of retrying. A thread waits indefinitely for its
+          first answer; that answer opens the claim window for the others, and anyone silent through
+          it is left out. An agent that claims but then goes quiet is dropped once the second timer
+          passes, so one stalled worker cannot hold a thread open.
         </p>
 
         <div className="flex items-center justify-between border-t border-line pt-3">

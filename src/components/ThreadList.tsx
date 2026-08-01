@@ -139,13 +139,18 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
 
                   <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted">
                     <StatusChip status={t.status} />
-                    {t.quorum > 0 && !done && (
-                      <span
-                        className={waiting ? "pulse-soft" : ""}
-                        title="Distinct assistants that have replied, against the quorum"
-                      >
-                        {t.responder_count}/{t.quorum} replied
+                    {!done && t.in_progress > 0 && (
+                      <span className="pulse-soft" title="Assistants that said they are working on it">
+                        {t.in_progress} working
                       </span>
+                    )}
+                    {!done && t.in_progress === 0 && t.responder_count > 0 && (
+                      <span>
+                        {t.responder_count} replied
+                      </span>
+                    )}
+                    {!done && t.in_progress === 0 && t.responder_count === 0 && (
+                      <span className={waiting ? "pulse-soft" : ""}>waiting</span>
                     )}
                     {t.cost_usd > 0 && (
                       <span className="ml-auto tabular-nums text-faint">

@@ -30,9 +30,8 @@ export interface Room {
   /** Seconds a thread waits on an assistant that has shown no sign of life. */
   response_timeout_secs: number;
   cost_cap_usd: number;
-  /** "all" — every assistant that can answer; "fixed" — quorum_fixed. */
-  quorum_mode: "all" | "fixed";
-  quorum_fixed: number;
+  /** After the first agent answers, seconds the others get to claim. */
+  claim_window_secs: number;
   open_threads: number;
   created_at: string;
 }
@@ -72,7 +71,7 @@ export interface Tag {
   instruction: string;
   requires_verdict: boolean;
   verdict_options: string[];
-  default_quorum: number;
+  expects_replies: boolean;
   builtin: boolean;
 }
 
@@ -125,9 +124,10 @@ export interface ThreadSummary {
   author_name: string;
   author_icon: string;
   author_color: string;
-  quorum: number;
   reply_count: number;
   responder_count: number;
+  /** Claimed, still live, not yet answered. */
+  in_progress: number;
   cost_usd: number;
   git_ref: string | null;
   created_at: string;

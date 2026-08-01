@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Select, Textarea } from "../ui";
+import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
 import type { ContextInput } from "../types";
 
 interface Attachment {
@@ -20,7 +20,6 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
   const [mentions, setMentions] = useState<number[]>([]);
   const [includeDiff, setIncludeDiff] = useState(true);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [quorum, setQuorum] = useState<string>("");
   const [files, setFiles] = useState<string[]>([]);
   const [git, setGit] = useState<{ is_repo: boolean; branch: string | null; dirty: boolean } | null>(
     null,
@@ -29,14 +28,6 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
   const tag = useMemo(() => tags.find((t) => t.key === tagKey), [tags, tagKey]);
   const assistants = agents.filter((a) => a.role === "ASSISTANT" && !a.revoked_at);
-
-  // Mentioning specific agents narrows who can answer, so the quorum choices
-  // have to narrow with it — offering more than this would strand the thread.
-  const eligible = mentions.length > 0 ? mentions.length : assistants.length;
-  const roomDefaultLabel =
-    room?.quorum_mode === "fixed"
-      ? `Room default — ${Math.min(room.quorum_fixed, eligible)}`
-      : `Room default — every connected assistant (${eligible})`;
 
   useEffect(() => {
     if (!tagKey && tags.length) setTagKey(tags[0].key);
@@ -74,7 +65,6 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
         tag: tagKey,
         mentions,
         context,
-        quorum: quorum === "" ? null : Number(quorum),
         include_diff: includeDiff,
       });
       await refreshThreads();
@@ -219,7 +209,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           </div>
         </Field>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <Field label="Ask" hint={mentions.length ? "" : "everyone in the room"}>
             <div className="max-h-28 space-y-1 overflow-y-auto rounded-lg bg-field p-2 ring-1 ring-inset ring-line">
               {assistants.length === 0 && (
@@ -246,23 +236,6 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
             </div>
           </Field>
 
-          <Field
-            label="Wait for"
-            hint={
-              assistants.length === 0
-                ? "no assistants in this room"
-                : `${eligible} can answer this thread`
-            }
-          >
-            <Select value={quorum} onChange={(e) => setQuorum(e.target.value)}>
-              <option value="">{roomDefaultLabel}</option>
-              {Array.from({ length: eligible + 1 }, (_, n) => (
-                <option key={n} value={n}>
-                  {n === 0 ? "No replies needed" : `${n} assistant${n > 1 ? "s" : ""}`}
-                </option>
-              ))}
-            </Select>
-          </Field>
         </div>
 
         <div className="flex justify-end gap-2 pt-1">

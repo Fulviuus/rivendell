@@ -31,18 +31,15 @@ CREATE TABLE IF NOT EXISTS rooms (
   purpose               TEXT NOT NULL DEFAULT '',
   paused                INTEGER NOT NULL DEFAULT 0,
   max_replies_per_agent INTEGER NOT NULL DEFAULT 6,
-  -- How long a thread keeps a slot open for an assistant that has shown no
-  -- sign of life. Claiming resets the clock; silence past this means the
-  -- thread stops counting on that agent.
+  -- After the first agent answers, how long the others get to say they are
+  -- working on it. Anyone who stays silent through this window is ignored.
+  claim_window_secs     INTEGER NOT NULL DEFAULT 120,
+  -- How long an "in progress" claim is honoured without a reply. Re-claiming
+  -- refreshes it; going quiet past this drops the claim.
   response_timeout_secs INTEGER NOT NULL DEFAULT 300,
   max_thread_messages   INTEGER NOT NULL DEFAULT 60,
   max_concurrent_runs   INTEGER NOT NULL DEFAULT 3,
   cost_cap_usd          REAL    NOT NULL DEFAULT 5.0,
-  -- How many assistants a new thread waits for by default.
-  -- 'all'   -> every assistant that can answer (grows with the room)
-  -- 'fixed' -> exactly quorum_fixed of them
-  quorum_mode           TEXT    NOT NULL DEFAULT 'all',
-  quorum_fixed          INTEGER NOT NULL DEFAULT 1,
   created_at            TEXT NOT NULL,
   UNIQUE(project_id, name)
 );
@@ -90,6 +87,8 @@ CREATE TABLE IF NOT EXISTS tags (
   instruction     TEXT NOT NULL,
   requires_verdict INTEGER NOT NULL DEFAULT 0,
   verdict_options TEXT NOT NULL DEFAULT '[]',
+  -- Legacy name. Now purely a flag: 0 means the tag expects no replies (FYI),
+  -- anything else means it does.
   default_quorum  INTEGER NOT NULL DEFAULT 1,
   sort            INTEGER NOT NULL DEFAULT 0,
   builtin         INTEGER NOT NULL DEFAULT 0
@@ -105,7 +104,9 @@ CREATE TABLE IF NOT EXISTS threads (
   status             TEXT NOT NULL,
   git_ref            TEXT,
   git_dirty          INTEGER NOT NULL DEFAULT 0,
-  quorum             INTEGER NOT NULL DEFAULT 1,
+  -- When the first agent answered. Null means the thread is still waiting,
+  -- and it waits indefinitely — nothing times out before anyone has spoken.
+  gather_started_at  TEXT,
   resolution_summary TEXT,
   export_path        TEXT,
   created_at         TEXT NOT NULL,
@@ -228,11 +229,11 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     for (table, column, decl) in [
         ("agents", "color", "TEXT NOT NULL DEFAULT ''"),
-        ("rooms", "quorum_mode", "TEXT NOT NULL DEFAULT 'all'"),
-        ("rooms", "quorum_fixed", "INTEGER NOT NULL DEFAULT 1"),
         ("rooms", "response_timeout_secs", "INTEGER NOT NULL DEFAULT 300"),
         ("messages", "edited_at", "TEXT"),
         ("projects", "color", "TEXT NOT NULL DEFAULT ''"),
+        ("rooms", "claim_window_secs", "INTEGER NOT NULL DEFAULT 120"),
+        ("threads", "gather_started_at", "TEXT"),
     ] {
         let exists: bool = conn
             .prepare(&format!(
@@ -406,7 +407,7 @@ mod tests {
 }
 
 fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
-    // (key, label, color, instruction, requires_verdict, verdict_options, quorum, sort)
+    // (key, label, color, instruction, requires_verdict, verdict_options, expects_replies, sort)
     let tags: &[(&str, &str, &str, &str, i64, &str, i64, i64)] = &[
         (
             "HELP_REQUEST",
@@ -490,14 +491,14 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
         ),
     ];
 
-    for (key, label, color, instruction, rv, opts, quorum, sort) in tags {
+    for (key, label, color, instruction, rv, opts, expects_replies, sort) in tags {
         conn.execute(
             "INSERT INTO tags(key,label,color,instruction,requires_verdict,verdict_options,default_quorum,sort,builtin)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1)
              ON CONFLICT(key) DO UPDATE SET
                label=excluded.label, color=excluded.color, sort=excluded.sort
              WHERE tags.builtin=1",
-            rusqlite::params![key, label, color, instruction, rv, opts, quorum, sort],
+            rusqlite::params![key, label, color, instruction, rv, opts, expects_replies, sort],
         )?;
     }
     Ok(())

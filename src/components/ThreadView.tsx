@@ -113,11 +113,12 @@ export function ThreadView() {
                   {thread.git_dirty && " (tree was dirty)"}
                 </span>
               )}
-              {thread.quorum > 0 && (
-                <span>
-                  {thread.responder_count}/{thread.quorum} assistants replied
-                </span>
-              )}
+              <span>
+                {thread.responder_count === 0
+                  ? "no replies yet"
+                  : `${thread.responder_count} assistant${thread.responder_count === 1 ? "" : "s"} replied`}
+                {thread.in_progress > 0 && ` · ${thread.in_progress} still working`}
+              </span>
               {thread.cost_usd > 0 && (
                 <span className="tabular-nums">${thread.cost_usd.toFixed(3)} spent</span>
               )}
@@ -235,7 +236,24 @@ export function ThreadView() {
               }
             }}
           />
-          <div className="mt-2 flex items-center justify-end">
+          <div className="mt-2 flex items-center justify-end gap-2">
+            {/* Typing @name works on its own — the server parses the body. These
+                are here so the mechanism is discoverable at all. */}
+            {agents
+              .filter((a) => a.role === "ASSISTANT" && !a.revoked_at)
+              .map((a) => (
+                <button
+                  key={a.id}
+                  title={`Call ${a.name} into this thread`}
+                  onClick={() =>
+                    setComposing((c) => (c.endsWith(" ") || !c ? c : c + " ") + `@${a.name} `)
+                  }
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-muted transition hover:bg-hover hover:text-strong"
+                >
+                  <Avatar name={a.name} icon={a.icon} color={a.color} size={14} />@{a.name}
+                </button>
+              ))}
+            <span className="flex-1" />
             <Button variant="primary" size="sm" onClick={post} disabled={busy || !composing.trim()}>
               Post update
             </Button>

@@ -219,7 +219,10 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              `resolve_thread`. An ASSISTANT watches for threads that need it — \
              `list_threads` shows those addressed to you or to everyone — claims it with \
              `claim_thread` so the room knows it is being worked on, reads it in full with \
-             `get_thread`, and answers with `reply`.
+             `get_thread`, and answers with `reply`. Write `@name` in any message to call another \
+             agent in; they are notified and get their own chance to answer.\n\n\
+             A thread waits indefinitely for its first answer. That answer opens a short window \
+             for the others to claim; whoever stays silent through it is left out.
 
 \
              Tags that require a verdict will reject a reply without one. That is deliberate: \

@@ -99,7 +99,6 @@ fn main() {
                             .into(),
                     ),
                 }],
-                quorum: Some(2),
                 include_diff: false,
             },
         )
@@ -165,7 +164,6 @@ fn main() {
                 tag: "ARCHITECTURE_DECISION".into(),
                 mentions: vec![],
                 context: vec![],
-                quorum: Some(1),
                 include_diff: false,
             },
         )
@@ -212,7 +210,6 @@ fn main() {
                 tag: "SECURITY_REVIEW".into(),
                 mentions: vec![auditor_id],
                 context: vec![],
-                quorum: Some(1),
                 include_diff: false,
             },
         )

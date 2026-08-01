@@ -282,7 +282,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT r.id,r.project_id,p.name,p.folder_path,r.name,r.purpose,r.paused,
                     r.max_replies_per_agent,r.max_thread_messages,r.response_timeout_secs,
-                    r.cost_cap_usd,r.quorum_mode,r.quorum_fixed,r.created_at,
+                    r.cost_cap_usd,r.claim_window_secs,r.created_at,
                     (SELECT COUNT(*) FROM threads t
                       WHERE t.room_id=r.id AND t.status IN ('OPEN','AWAITING_REPLIES','NEEDS_CODER'))
              FROM rooms r JOIN projects p ON p.id=r.project_id
@@ -302,10 +302,9 @@ impl Store {
                     max_thread_messages: r.get(8)?,
                     response_timeout_secs: r.get(9)?,
                     cost_cap_usd: r.get(10)?,
-                    quorum_mode: r.get(11)?,
-                    quorum_fixed: r.get(12)?,
-                    created_at: r.get(13)?,
-                    open_threads: r.get(14)?,
+                    claim_window_secs: r.get(11)?,
+                    created_at: r.get(12)?,
+                    open_threads: r.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -341,8 +340,7 @@ impl Store {
             ("response_timeout_secs", "response_timeout_secs"),
             ("max_thread_messages", "max_thread_messages"),
             ("cost_cap_usd", "cost_cap_usd"),
-            ("quorum_mode", "quorum_mode"),
-            ("quorum_fixed", "quorum_fixed"),
+            ("claim_window_secs", "claim_window_secs"),
         ] {
             let Some(v) = patch.get(key) else { continue };
             let sql = format!("UPDATE rooms SET {col}=?1 WHERE id=?2");
@@ -461,7 +459,7 @@ impl Store {
                     requires_verdict: r.get::<_, i64>(4)? != 0,
                     verdict_options: serde_json::from_str(&r.get::<_, String>(5)?)
                         .unwrap_or_default(),
-                    default_quorum: r.get(6)?,
+                    expects_replies: r.get::<_, i64>(6)? != 0,
                     builtin: r.get::<_, i64>(7)? != 0,
                 })
             })?
@@ -482,7 +480,7 @@ impl Store {
                     instruction: r.get(3)?,
                     requires_verdict: r.get::<_, i64>(4)? != 0,
                     verdict_options: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(),
-                    default_quorum: r.get(6)?,
+                    expects_replies: r.get::<_, i64>(6)? != 0,
                     builtin: r.get::<_, i64>(7)? != 0,
                 })
             },
@@ -739,50 +737,122 @@ impl Store {
     }
 
 
-    /// How many assistants this thread is still reasonably waiting on.
+    /// Pull `@name` out of a message and add those agents to the thread.
     ///
-    /// An assistant counts if it has already replied, or has claimed the thread
-    /// recently enough to still look alive. Before the room's timeout elapses
-    /// everyone counts, because an agent that has not spoken yet may simply not
-    /// have looked. After it, silence is taken as "not going to happen" and the
-    /// thread stops holding a slot open — otherwise a single agent that is not
-    /// running would strand it for ever.
-    fn expected_responders(conn: &Connection, thread_id: i64) -> Result<i64> {
-        let (room_id, created_at, timeout): (i64, String, i64) = conn.query_row(
-            "SELECT t.room_id, t.created_at, r.response_timeout_secs
-             FROM threads t JOIN rooms r ON r.id=t.room_id WHERE t.id=?1",
-            params![thread_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    /// This is how an agent calls in another: an assistant that needs a second
+    /// opinion writes `@auditor` and the thread now addresses them too. The new
+    /// participant is announced on the event log, and the gather window reopens
+    /// so they get the same chance to answer that everyone else had — otherwise
+    /// being called in late would mean being ignored on arrival.
+    fn apply_body_mentions(
+        conn: &Connection,
+        thread_id: i64,
+        room_id: i64,
+        body: &str,
+        by: i64,
+    ) -> Result<Vec<String>> {
+        let names = parse_mentions(body);
+        if names.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name FROM agents WHERE room_id=?1 AND revoked_at IS NULL",
         )?;
+        let roster: Vec<(i64, String)> = stmt
+            .query_map(params![room_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
 
-        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(timeout.max(0))).to_rfc3339();
-        let within_grace = created_at.as_str() > cutoff.as_str();
+        let mut added = Vec::new();
+        for wanted in names {
+            let Some((id, name)) = roster
+                .iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(&wanted))
+            else {
+                continue; // an @word that is not an agent here is just prose
+            };
+            if *id == by {
+                continue;
+            }
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO thread_mentions(thread_id,agent_id) VALUES(?1,?2)",
+                params![thread_id, id],
+            )?;
+            if inserted > 0 {
+                added.push(name.clone());
+            }
+        }
 
-        Ok(conn.query_row(
-            "SELECT COUNT(*) FROM agents a
-             WHERE a.room_id=?1 AND a.role='ASSISTANT' AND a.revoked_at IS NULL
-               AND (EXISTS(SELECT 1 FROM thread_mentions m
-                            WHERE m.thread_id=?2 AND m.agent_id=a.id)
-                    OR NOT EXISTS(SELECT 1 FROM thread_mentions m WHERE m.thread_id=?2))
-               AND (?4
-                    OR EXISTS(SELECT 1 FROM messages ms
-                               WHERE ms.thread_id=?2 AND ms.agent_id=a.id)
-                    OR EXISTS(SELECT 1 FROM thread_claims c
-                               WHERE c.thread_id=?2 AND c.agent_id=a.id
-                                 AND c.claimed_at > ?3))",
-            params![room_id, thread_id, cutoff, within_grace as i64],
-            |r| r.get(0),
-        )?)
+        if !added.is_empty() {
+            // Reopening the window is the point: someone was just invited.
+            conn.execute(
+                "UPDATE threads
+                 SET gather_started_at = CASE WHEN gather_started_at IS NULL
+                                              THEN NULL ELSE ?1 END,
+                     status = CASE WHEN status IN ('RESOLVED','WONTFIX') THEN status
+                                   ELSE 'AWAITING_REPLIES' END
+                 WHERE id=?2",
+                params![now(), thread_id],
+            )?;
+        }
+        Ok(added)
     }
 
-    /// The stored quorum, capped by who is still plausibly going to answer.
-    fn effective_quorum(conn: &Connection, thread_id: i64) -> Result<i64> {
-        let stored: i64 = conn.query_row(
-            "SELECT quorum FROM threads WHERE id=?1",
+    /// Whether a thread is ready to go back to the coder.
+    ///
+    /// The rule, in order:
+    ///
+    ///   1. Nobody has answered yet -> wait. Indefinitely. A question with no
+    ///      takers is not a failure, and nothing should time out before a
+    ///      single agent has spoken.
+    ///   2. The first agent reply opens a window for the others to say they
+    ///      are working on it. While that window is open, keep waiting.
+    ///   3. Once it closes, the participants are whoever spoke or claimed.
+    ///      Anyone still silent is ignored.
+    ///   4. Wait for the outstanding claims to turn into replies — but a claim
+    ///      that goes quiet past the room's timeout is dropped, so one agent
+    ///      that died mid-job cannot hold the thread for ever.
+    fn is_ready_for_coder(conn: &Connection, thread_id: i64) -> Result<bool> {
+        let (room_id, gather_started_at): (i64, Option<String>) = conn.query_row(
+            "SELECT room_id, gather_started_at FROM threads WHERE id=?1",
             params![thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        // (1) nobody has answered
+        let Some(started) = gather_started_at else {
+            return Ok(false);
+        };
+
+        let (claim_window, claim_timeout): (i64, i64) = conn.query_row(
+            "SELECT claim_window_secs, response_timeout_secs FROM rooms WHERE id=?1",
+            params![room_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        // (2) the window for others to put their hand up
+        let now = chrono::Utc::now();
+        let window_closes =
+            (now - chrono::Duration::seconds(claim_window.max(0))).to_rfc3339();
+        if started.as_str() > window_closes.as_str() {
+            return Ok(false);
+        }
+
+        // (3)/(4) claims that are still live and still unanswered
+        let stale_before = (now - chrono::Duration::seconds(claim_timeout.max(0))).to_rfc3339();
+        let outstanding: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM thread_claims c
+             JOIN agents a ON a.id=c.agent_id
+             WHERE c.thread_id=?1
+               AND a.revoked_at IS NULL
+               AND c.claimed_at > ?2
+               AND NOT EXISTS(SELECT 1 FROM messages m
+                               WHERE m.thread_id=?1 AND m.agent_id=c.agent_id)",
+            params![thread_id, stale_before],
             |r| r.get(0),
         )?;
-        Ok(stored.min(Self::expected_responders(conn, thread_id)?))
+        Ok(outstanding == 0)
     }
 
     /// An assistant announcing that it has picked a thread up. Re-claiming
@@ -824,7 +894,7 @@ impl Store {
         Ok(())
     }
 
-    /// Threads whose window has closed without quorum being met are handed back
+    /// Threads whose gather window has closed with nothing outstanding are handed back
     /// to the coder. Runs on a timer so this happens without anyone asking.
     pub fn sweep_stalled_threads(&self) -> Result<usize> {
         let conn = self.lock();
@@ -838,17 +908,7 @@ impl Store {
 
         let mut notices = Vec::new();
         for id in ids {
-            let responders: i64 = conn.query_row(
-                "SELECT COUNT(DISTINCT m.agent_id) FROM messages m
-                 JOIN agents a ON a.id=m.agent_id
-                 WHERE m.thread_id=?1 AND a.role='ASSISTANT'",
-                params![id],
-                |r| r.get(0),
-            )?;
-            // No `.max(1)` here, unlike the reply path: when nobody is expected
-            // any more, effective quorum is 0 and a thread with no replies at
-            // all still has to come back to the coder.
-            if responders < Self::effective_quorum(&conn, id)? {
+            if !Self::is_ready_for_coder(&conn, id)? {
                 continue;
             }
             let room: Option<i64> = conn
@@ -866,11 +926,7 @@ impl Store {
                 None,
                 serde_json::json!({
                     "status": "NEEDS_CODER",
-                    "reason": if responders == 0 {
-                        "nobody picked this up before the room's timeout"
-                    } else {
-                        "the assistants that were going to answer have answered"
-                    },
+                    "reason": "everyone still working on it has answered",
                 }),
             )?);
         }
@@ -909,55 +965,17 @@ impl Store {
         let mut guard = self.lock();
         let tag = Self::tag(&guard, &input.tag)?;
 
-        // A quorum larger than the number of assistants that could possibly
-        // answer is a dead end: the thread would sit in AWAITING_REPLIES for
-        // ever and never tell the coder it is their turn. Clamp it to who is
-        // actually eligible — every assistant in the room, or just the
-        // mentioned ones when the thread addresses specific agents.
-        let eligible = {
-            let mut stmt = guard.prepare(
-                "SELECT id FROM agents
-                 WHERE room_id=?1 AND role='ASSISTANT' AND revoked_at IS NULL",
-            )?;
-            let ids: Vec<i64> = stmt
-                .query_map(params![input.room_id], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            if input.mentions.is_empty() {
-                ids.len() as i64
-            } else {
-                ids.iter().filter(|id| input.mentions.contains(id)).count() as i64
-            }
-        };
-        // Resolution order, most specific first:
-        //   1. an explicit `quorum` on this thread
-        //   2. the tag opting out entirely (FYI expects no replies)
-        //   3. the room's policy — "all" tracks the room as it grows, "fixed"
-        //      pins a number
-        // and the result is clamped to what is actually reachable, because a
-        // quorum larger than the number of assistants that can answer would
-        // leave the thread waiting for ever.
-        let (room_mode, room_fixed): (String, i64) = guard.query_row(
-            "SELECT quorum_mode, quorum_fixed FROM rooms WHERE id=?1",
-            params![input.room_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let quorum = match input.quorum {
-            Some(explicit) => explicit.max(0),
-            None if tag.default_quorum == 0 => 0,
-            None if room_mode == "fixed" => room_fixed.max(0),
-            None => eligible,
-        }
-        .min(eligible);
-
         let git_ref = git::head(&root);
         let git_dirty = git::is_dirty(&root);
 
         let tx = guard.transaction()?;
-        let status = if quorum > 0 { "AWAITING_REPLIES" } else { "OPEN" };
+        // FYI threads expect nothing; everything else waits, for as long as it
+        // takes, until an agent answers.
+        let status = if tag.expects_replies { "AWAITING_REPLIES" } else { "OPEN" };
         tx.execute(
             "INSERT INTO threads(room_id,author_agent_id,title,body,tag,status,git_ref,git_dirty,
-                                 quorum,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
+                                 created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
             params![
                 input.room_id,
                 author.id,
@@ -967,7 +985,6 @@ impl Store {
                 status,
                 git_ref,
                 git_dirty as i64,
-                quorum,
                 created
             ],
         )?;
@@ -1022,6 +1039,10 @@ impl Store {
         }
 
         index_thread(&tx, thread_id, input.room_id, &input.title, &input.body)?;
+
+        // @names in the opening post address those agents too.
+        let room_id = input.room_id;
+        let _ = Self::apply_body_mentions(&tx, thread_id, room_id, &input.body, author.id)?;
 
         let notice = Self::append_event(
             &tx,
@@ -1336,11 +1357,11 @@ impl Store {
         }
 
         let mut guard = self.lock();
-        let (room_id, tag_key, status, quorum): (i64, String, String, i64) = guard
+        let (room_id, tag_key, status): (i64, String, String) = guard
             .query_row(
-                "SELECT room_id,tag,status,quorum FROM threads WHERE id=?1",
+                "SELECT room_id,tag,status FROM threads WHERE id=?1",
                 params![input.thread_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("thread {}", input.thread_id)))?;
@@ -1432,31 +1453,20 @@ impl Store {
         )?;
         let message_id = tx.last_insert_rowid();
 
-        // Status follows who spoke: an assistant moves it toward the coder once
-        // quorum is met; the coder speaking hands the ball back to the room.
-        let next_status = if actor.role == "ASSISTANT" {
-            let responders: i64 = tx.query_row(
-                "SELECT COUNT(DISTINCT m.agent_id) FROM messages m
-                 JOIN agents a ON a.id=m.agent_id
-                 WHERE m.thread_id=?1 AND a.role='ASSISTANT'",
-                params![input.thread_id],
-                |r| r.get(0),
+        // The first *agent* answer starts the clock for everyone else. A human
+        // posting does not: the question is still unanswered.
+        if actor.role == "ASSISTANT" {
+            tx.execute(
+                "UPDATE threads SET gather_started_at=?1
+                 WHERE id=?2 AND gather_started_at IS NULL",
+                params![created, input.thread_id],
             )?;
-            // Recomputed rather than trusting the stored quorum: assistants
-            // can be removed, and ones that never showed up stop counting once
-            // the room's timeout has passed.
-            //
-            // `.max(1)` so a reply always counts for something even when the
-            // tag asks for no replies at all.
-            if responders >= Self::effective_quorum(&tx, input.thread_id)?.max(1) {
-                "NEEDS_CODER"
-            } else {
-                "AWAITING_REPLIES"
-            }
-        } else if quorum > 0 {
-            "AWAITING_REPLIES"
+        }
+
+        let next_status = if Self::is_ready_for_coder(&tx, input.thread_id)? {
+            "NEEDS_CODER"
         } else {
-            "OPEN"
+            "AWAITING_REPLIES"
         };
         tx.execute(
             "UPDATE threads SET status=?1, updated_at=?2 WHERE id=?3 AND status NOT IN ('RESOLVED','WONTFIX')",
@@ -1464,6 +1474,21 @@ impl Store {
         )?;
 
         index_message(&tx, message_id, room_id, &input.body)?;
+
+        // Anyone named in the body joins the thread and is told about it.
+        let called = Self::apply_body_mentions(&tx, input.thread_id, room_id, &input.body, actor.id)?;
+        let call_notice = if called.is_empty() {
+            None
+        } else {
+            Some(Self::append_event(
+                &tx,
+                Some(room_id),
+                Some(input.thread_id),
+                "thread.mentioned",
+                Some(actor.id),
+                serde_json::json!({ "called": called }),
+            )?)
+        };
 
         let notice = Self::append_event(
             &tx,
@@ -1482,6 +1507,9 @@ impl Store {
         tx.commit()?;
         drop(guard);
         self.publish(notice);
+        if let Some(n) = call_notice {
+            self.publish(n);
+        }
         Ok(message_id)
     }
 
@@ -1616,6 +1644,22 @@ impl Store {
             params![input.body, message_id],
         );
 
+
+        // Anyone named in the body joins the thread and is told about it.
+        let called = Self::apply_body_mentions(&tx, thread_id, room_id, &input.body, actor.id)?;
+        let call_notice = if called.is_empty() {
+            None
+        } else {
+            Some(Self::append_event(
+                &tx,
+                Some(room_id),
+                Some(thread_id),
+                "thread.mentioned",
+                Some(actor.id),
+                serde_json::json!({ "called": called }),
+            )?)
+        };
+
         // The previous verdict is worth keeping: it is the load-bearing part of
         // a reply, and the event log is where the trail lives. The old body is
         // not retained — only whether it changed.
@@ -1638,6 +1682,9 @@ impl Store {
         tx.commit()?;
         drop(guard);
         self.publish(notice);
+        if let Some(n) = call_notice {
+            self.publish(n);
+        }
 
         // A resolved thread already wrote its record; leaving it stale would
         // make the file disagree with the app.
@@ -1733,6 +1780,33 @@ fn index_message(conn: &Connection, id: i64, room: i64, body: &str) -> Result<()
     Ok(())
 }
 
+/// `@name` where name is the usual identifier shape. Anything else is prose.
+/// Deliberately strict: an email address or a decorator should not summon an
+/// agent.
+fn parse_mentions(body: &str) -> Vec<String> {
+    let bytes: Vec<char> = body.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == '@' && (i == 0 || !bytes[i - 1].is_alphanumeric()) {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j].is_alphanumeric() || bytes[j] == '-' || bytes[j] == '_') {
+                j += 1;
+            }
+            if j > i + 1 {
+                let name: String = bytes[i + 1..j].iter().collect();
+                if !out.iter().any(|e| e.eq_ignore_ascii_case(&name)) {
+                    out.push(name);
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 fn remote_of(root: &std::path::Path) -> Option<String> {
     git::remote(root)
 }
@@ -1753,11 +1827,18 @@ fn normalize_room_name(name: &str) -> Result<String> {
 const THREAD_SUMMARY_SQL: &str = "
 SELECT t.id, t.room_id, r.name, t.title, t.tag, t.status, t.author_agent_id, a.name,
        COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
-       t.quorum,
        (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS reply_count,
        (SELECT COUNT(DISTINCT m.agent_id) FROM messages m
           JOIN agents ag ON ag.id=m.agent_id
          WHERE m.thread_id=t.id AND ag.role='ASSISTANT') AS responder_count,
+       -- Claimed, still live, still unanswered. Recomputed per row rather than
+       -- stored, so it cannot go stale between the timer and a read.
+       (SELECT COUNT(*) FROM thread_claims c
+          JOIN agents ca ON ca.id=c.agent_id
+         WHERE c.thread_id=t.id AND ca.revoked_at IS NULL
+           AND c.claimed_at > datetime('now', '-' || r.response_timeout_secs || ' seconds')
+           AND NOT EXISTS(SELECT 1 FROM messages m
+                           WHERE m.thread_id=t.id AND m.agent_id=c.agent_id)) AS in_progress,
        (SELECT COALESCE(SUM(m.cost_usd),0) FROM messages m WHERE m.thread_id=t.id) AS cost_usd,
        t.git_ref, t.created_at, t.updated_at, t.resolved_at, a.color,
        (SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id=t.id) AS last_reply_at
@@ -1777,9 +1858,9 @@ fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadSummary> {
         author_agent_id: r.get(6)?,
         author_name: r.get(7)?,
         author_icon: r.get(8)?,
-        quorum: r.get(9)?,
-        reply_count: r.get(10)?,
-        responder_count: r.get(11)?,
+        reply_count: r.get(9)?,
+        responder_count: r.get(10)?,
+        in_progress: r.get(11)?,
         cost_usd: r.get(12)?,
         git_ref: r.get(13)?,
         created_at: r.get(14)?,

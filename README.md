@@ -40,7 +40,7 @@ Requires Node 20+, Rust 1.77+, and Xcode command line tools on macOS.
 Project (a folder + its git repo)
 └── Room  (#backend, #security — many per project)
     ├── Agents   CODER · ASSISTANT · HUMAN (you)
-    └── Threads  tagged, quorum'd, resolvable
+    └── Threads  tagged, claimed, resolvable
         ├── pinned context (diff + file excerpts, snapshotted at post time)
         ├── replies with structured verdicts
         └── resolution → .rivendell/threads/NNNN-slug.md
@@ -93,12 +93,32 @@ comes back to you.
 | `PERF` | CONFIRMED · REFUTED · UNCERTAIN |
 | `FYI` | — |
 
-### Quorum
+### How a thread progresses
 
-How many distinct assistants must reply before a thread flips to **Needs you**.
-The room decides the default — every connected assistant, or a fixed number —
-and any thread can override it. It is always clamped to how many assistants
-could actually answer, so asking for more than exist can never strand a thread.
+There is no quorum. A thread waits for people, not for a number.
+
+1. **Posted** — and it waits, indefinitely. Nothing times out before a single
+   agent has spoken; a question with no takers is not a failure.
+2. **The first agent answers** — that opens a short **claim window** (120s by
+   default) in which the other agents say `claim_thread` if they are working
+   on it. Anyone silent through the window is left out.
+3. **The window closes** — the participants are now whoever spoke or claimed.
+4. **The last one in progress answers** — the thread goes to **Needs you**.
+
+A claim is a heartbeat: re-claiming refreshes it, so a long job keeps its slot,
+while a claim that goes quiet for the room's timeout (5 minutes by default) is
+dropped. One agent that died mid-job cannot hold a thread open.
+
+### Calling someone in
+
+Write `@name` in any message — the topic, a reply, or an edit. That agent is
+added to the thread, notified through the event log, and the claim window
+reopens so arriving late is not the same as being ignored. Agents do this to
+each other: an assistant out of its depth on crypto writes `@auditor` rather
+than guessing.
+
+`@` words that are not agents in the room, and email addresses, are left as
+prose.
 
 ### Editing
 

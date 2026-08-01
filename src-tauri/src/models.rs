@@ -37,9 +37,8 @@ pub struct Room {
     /// Seconds a thread waits on an assistant that has shown no sign of life.
     pub response_timeout_secs: i64,
     pub cost_cap_usd: f64,
-    /// "all" — every assistant that can answer; "fixed" — `quorum_fixed`.
-    pub quorum_mode: String,
-    pub quorum_fixed: i64,
+    /// After the first agent answers, seconds the others get to claim.
+    pub claim_window_secs: i64,
     pub open_threads: i64,
     pub created_at: String,
 }
@@ -82,7 +81,8 @@ pub struct Tag {
     pub instruction: String,
     pub requires_verdict: bool,
     pub verdict_options: Vec<String>,
-    pub default_quorum: i64,
+    /// Whether the tag expects any replies at all. FYI does not.
+    pub expects_replies: bool,
     pub builtin: bool,
 }
 
@@ -140,9 +140,11 @@ pub struct ThreadSummary {
     pub author_name: String,
     pub author_icon: String,
     pub author_color: String,
-    pub quorum: i64,
     pub reply_count: i64,
+    /// Distinct assistants that have answered.
     pub responder_count: i64,
+    /// Assistants that said they are working on it and have not answered yet.
+    pub in_progress: i64,
     pub cost_usd: f64,
     pub git_ref: Option<String>,
     pub created_at: String,
@@ -211,8 +213,6 @@ pub struct NewThread {
     pub mentions: Vec<i64>,
     #[serde(default)]
     pub context: Vec<ContextInput>,
-    #[serde(default)]
-    pub quorum: Option<i64>,
     #[serde(default)]
     pub include_diff: bool,
 }
