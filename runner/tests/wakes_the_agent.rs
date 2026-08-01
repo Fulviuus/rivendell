@@ -84,6 +84,62 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8(body).unwrap()
 }
 
+/// A poll is meant to block. When something answers instantly instead — an
+/// older Rivendell, an unexpected error shape — re-asking with no pause turns
+/// a quiet room into tens of thousands of requests a second against the app.
+#[test]
+fn an_instant_answer_does_not_become_a_hot_loop() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let seen = calls.clone();
+    let server = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let body = read_request(&mut stream);
+            let req: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let name = req["params"]["name"].as_str().unwrap_or("");
+            if name == "wait_for_updates" {
+                seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Always instant, never blocking. The pathological server.
+            let payload = if name == "whoami" {
+                serde_json::json!({"agent_id": 7, "name": "scout", "rooms": []})
+            } else {
+                serde_json::json!({"next_cursor": 5, "events": []})
+            };
+            let envelope = serde_json::json!({
+                "jsonrpc": "2.0", "id": req["id"],
+                "result": { "content": [{ "type": "text", "text": payload.to_string() }] }
+            })
+            .to_string();
+            let res = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                envelope.len(),
+                envelope
+            );
+            if stream.write_all(res.as_bytes()).is_err() {
+                break;
+            }
+            let _ = stream.flush();
+        }
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rivendell-run"))
+        .args(["--key", "rvd_test", "--url", &url, "--wait", "3", "--"])
+        .arg("/bin/true")
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let n = calls.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(n < 30, "polled {n} times in 4s — that is a hot loop, not a watch");
+    drop(server);
+}
+
 /// Without a wall clock one wedged run stops the watch for good, which is the
 /// exact failure this program exists to prevent.
 #[test]

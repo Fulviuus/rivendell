@@ -124,6 +124,7 @@ fn main() {
         // The catch-up answer is not a wake-up: if it found nothing, there is
         // nothing to have handled, and --once must still wait for one.
         let from_catch_up = pending.is_some();
+        let started = Instant::now();
         // The catch-up answer, first time round; a fresh poll after that.
         let v = match pending.take() {
             Some(v) => v,
@@ -148,6 +149,13 @@ fn main() {
         if threads.is_empty() {
             if cfg.once && !from_catch_up {
                 return;
+            }
+            // The poll is meant to block. If it came back at once — an older
+            // Rivendell, a server that does not hold it, an error shape we did
+            // not expect — re-asking immediately turns a quiet room into tens
+            // of thousands of requests a second against the app.
+            if !from_catch_up && started.elapsed() < Duration::from_millis(500) {
+                std::thread::sleep(Duration::from_secs(1));
             }
             continue;
         }
