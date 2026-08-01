@@ -2,39 +2,39 @@ import { Avatar, Button, Icon } from "../ui";
 import type { Agent } from "../types";
 
 /**
- * The agents of one room.
+ * The agents in a list, with the actions that make sense where it is shown.
  *
- * Shared by room settings and project settings rather than duplicated: an agent
- * belongs to a room, so both places are looking at the same list, just from
- * different heights. The parent owns the dialogs, since project settings swaps
- * its whole body for them while room settings does not.
+ * Rooms manage membership; the project manages existence. Keeping those apart
+ * matters: a delete button inside a room reads as "take it out of this room"
+ * and would in fact destroy the agent everywhere, along with its key.
  */
 export function AgentRoster({
   agents,
+  mode,
   compact,
-  inRoom,
   onAdd,
+  addLabel,
   onEdit,
   onRotate,
-  onDelete,
   onRemove,
+  onDelete,
 }: {
   agents: Agent[];
-  /** Tighter rows, for the per-room blocks inside project settings. */
+  /** "room" offers remove; "project" offers delete. Never both. */
+  mode: "room" | "project";
   compact?: boolean;
-  /** Viewing one room: offer "remove from room" as well as delete. */
-  inRoom?: boolean;
-  onAdd: () => void;
+  onAdd?: () => void;
+  addLabel?: string;
   onEdit: (a: Agent) => void;
   onRotate: (a: Agent) => void;
-  onDelete: (a: Agent) => void;
   onRemove?: (a: Agent) => void;
+  onDelete?: (a: Agent) => void;
 }) {
   return (
     <div className="space-y-1">
       {agents.length === 0 && (
         <p className="px-1 py-1 text-[12px] text-faint">
-          No agents in this room yet.
+          {mode === "room" ? "Nobody is in this room yet." : "No agents in this project yet."}
         </p>
       )}
 
@@ -72,40 +72,42 @@ export function AgentRoster({
             <Button size="sm" variant="subtle" title="Edit" onClick={() => onEdit(a)}>
               <Icon name="pencil" size={11} />
             </Button>
-            <Button
-              size="sm"
-              variant="subtle"
-              title="Issue a new key"
-              onClick={() => onRotate(a)}
-            >
+            <Button size="sm" variant="subtle" title="Issue a new key" onClick={() => onRotate(a)}>
               <Icon name="key" size={11} />
             </Button>
-            {inRoom && onRemove && (
+
+            {mode === "room" && onRemove && (
               <Button
                 size="sm"
                 variant="subtle"
-                title="Remove from this room — the agent stays in the project"
+                title="Take out of this room — the agent and its key stay in the project"
                 onClick={() => onRemove(a)}
               >
                 <Icon name="x" size={11} />
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="subtle"
-              title="Delete this agent from the project entirely"
-              onClick={() => onDelete(a)}
-            >
-              <Icon name="trash" size={11} />
-            </Button>
+
+            {/* Only where it cannot be mistaken for "remove from this room". */}
+            {mode === "project" && onDelete && (
+              <Button
+                size="sm"
+                variant="subtle"
+                title="Delete from the project — removes it from every room and kills its key"
+                onClick={() => onDelete(a)}
+              >
+                <Icon name="trash" size={11} />
+              </Button>
+            )}
           </div>
         </div>
       ))}
 
-      <Button size="sm" variant="subtle" onClick={onAdd}>
-        <Icon name="plus" size={12} />
-        {inRoom ? "Create a new agent" : "Add an agent"}
-      </Button>
+      {onAdd && (
+        <Button size="sm" variant="subtle" onClick={onAdd}>
+          <Icon name="plus" size={12} />
+          {addLabel ?? "Add an agent"}
+        </Button>
+      )}
     </div>
   );
 }

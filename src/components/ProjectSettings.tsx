@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../api";
 import { useStore } from "../store";
 import {
+  Avatar,
   Button,
   ColorPicker,
   Field,
@@ -265,14 +266,16 @@ export function ProjectSettings({
                   </div>
 
                   <AgentRoster
+                    mode="room"
                     compact
                     agents={mine}
+                    addLabel="Create one here"
                     onAdd={() => setAdding({ id: room.id, name: room.name })}
                     onEdit={setEditing}
                     onRotate={setRotating}
-                    onDelete={async (a) => {
+                    onRemove={async (a) => {
                       try {
-                        await api.deleteAgent(a.id);
+                        await api.leaveRoom(room.id, a.id);
                         await loadAgents();
                         await refreshAgents();
                       } catch (e) {
@@ -280,10 +283,59 @@ export function ProjectSettings({
                       }
                     }}
                   />
+                  {agents.filter((a) => !mine.some((m) => m.id === a.id)).length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 px-1.5">
+                      <span className="text-[11px] text-faint">add:</span>
+                      {agents
+                        .filter((a) => !mine.some((m) => m.id === a.id))
+                        .map((a) => (
+                          <button
+                            key={a.id}
+                            onClick={async () => {
+                              try {
+                                await api.joinRoom(room.id, a.id);
+                                await loadAgents();
+                                await refreshAgents();
+                              } catch (e) {
+                                notify("error", errText(e));
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-muted transition hover:bg-hover hover:text-strong"
+                          >
+                            <Avatar name={a.name} icon={a.icon} color={a.color} size={14} />
+                            {a.name}
+                          </button>
+                        ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
+        </div>
+
+        <div>
+          <h3 className="mb-1 text-[11.5px] font-semibold tracking-wide text-soft uppercase">
+            All agents in this project
+          </h3>
+          <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
+            Deleting here is permanent: the agent leaves every room and its key stops working.
+          </p>
+          <AgentRoster
+            mode="project"
+            agents={agents}
+            onEdit={setEditing}
+            onRotate={setRotating}
+            onDelete={async (a) => {
+              try {
+                await api.deleteAgent(a.id);
+                await loadAgents();
+                await refreshAgents();
+              } catch (e) {
+                notify("error", errText(e));
+              }
+            }}
+          />
         </div>
 
         {/* ----------------------------------------------------- danger --- */}

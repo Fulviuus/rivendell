@@ -175,27 +175,21 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             Agents in this room
           </h3>
           <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
-            An agent belongs to the project and joins rooms. Adding one here does not give it a
-            second identity — same agent, same key, now also in #{room.name}.
+            An agent belongs to the project and joins rooms. Taking one out of #{room.name} does
+            not delete it — it keeps its key and its other rooms, and comes back to the list below.
+            Deleting one for good is in project settings.
           </p>
 
           <AgentRoster
+            mode="room"
             agents={agents}
-            inRoom
-            onRemove={async (a) => {
-              try {
-                await api.leaveRoom(room.id, a.id);
-                await refreshAgents();
-              } catch (e) {
-                notify("error", errText(e));
-              }
-            }}
+            addLabel="Create a new agent, and put it here"
             onAdd={() => setAdding(true)}
             onEdit={setEditing}
             onRotate={setRotating}
-            onDelete={async (a) => {
+            onRemove={async (a) => {
               try {
-                await api.deleteAgent(a.id);
+                await api.leaveRoom(room.id, a.id);
                 await refreshAgents();
               } catch (e) {
                 notify("error", errText(e));
