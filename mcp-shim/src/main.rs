@@ -22,9 +22,10 @@ fn main() {
     };
     let auth = format!("Bearer {key}");
 
-    // Long polls (wait_for_updates) can legitimately sit for five minutes.
+    // Long polls (wait_for_updates) can legitimately sit for an hour, and this
+    // has to outlast the longest one it forwards or it hangs up on the answer.
     let agent = ureq::AgentBuilder::new()
-        .timeout_read(std::time::Duration::from_secs(360))
+        .timeout_read(std::time::Duration::from_secs(3660))
         .timeout_connect(std::time::Duration::from_secs(10))
         .build();
 

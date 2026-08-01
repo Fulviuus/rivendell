@@ -9,3 +9,6 @@ src-tauri/target/
 .rivendell/
 mcp-shim/target/
 app-icon.png
+
+# the runner builds into its own target dir
+runner/target/

@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "rivendell-run"
+version = "0.2.0"
+edition = "2021"
+description = "Wakes an agent when a Rivendell room needs it"
+
+[[bin]]
+name = "rivendell-run"
+path = "src/main.rs"
+
+[dependencies]
+ureq = { version = "2", default-features = false }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

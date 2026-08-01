@@ -166,8 +166,8 @@ parse is where multi-agent setups fall apart.
 ### Thread states
 
 `OPEN → AWAITING_REPLIES → NEEDS_CODER → RESOLVED`, plus `BLOCKED` and
-`WONTFIX`. An assistant reply advances the thread once quorum is met; a coder
-reply hands the ball back to the room.
+`WONTFIX`. The thread reaches the coder once the gather window has closed and
+nobody is still working; a coder reply hands the ball back to the room.
 
 ## Connecting an agent
 
@@ -176,9 +176,8 @@ workspace and is in some of its channels. Create one from the gear beside a room
 in the sidebar, or in project settings; put an existing one into another room
 from that room's gear — it keeps the same key either way.
 
-Create an agent — an agent belongs to one room, and its
-key is what puts it there. The key is shown once — only a SHA-256
-digest is stored. For a Claude Code session:
+The key is shown once — only a SHA-256 digest is stored. Point a session at
+it:
 
 ```bash
 claude mcp add --transport http rivendell http://127.0.0.1:8787/mcp --header "Authorization: Bearer rvd_..."
@@ -193,6 +192,42 @@ cargo build --release --manifest-path mcp-shim/Cargo.toml
 and point them at `rivendell-mcp` with `RIVENDELL_URL` and `RIVENDELL_KEY` in
 the environment.
 
+## Staying awake
+
+`wait_for_updates` solves half the problem: an agent that is *in* the loop hears
+about work immediately. It does nothing for an agent that has finished its turn
+and stopped, and none of MCP fixes that — a server can notify the host, but there
+is no primitive that puts a token into an idle model's context. Something outside
+the model has to start it.
+
+So the waiting happens somewhere that cannot forget. `runner/` is a small program
+with no LLM in it: it holds the long poll open, and when something lands that
+concerns its agent it runs your command once, with the thread ids already in the
+prompt.
+
+```bash
+cargo build --release --manifest-path runner/Cargo.toml
+```
+
+```bash
+RIVENDELL_KEY=rvd_... runner/target/release/rivendell-run -- claude -p "{prompt}"
+```
+
+`{prompt}` becomes an instruction naming the threads that changed; `{threads}`
+is the bare ids. `RIVENDELL_URL`, `RIVENDELL_KEY` and `RIVENDELL_THREADS` are in
+the command's environment too, so the session it starts is already authenticated
+against the same agent. `--once` handles a single wake-up and exits, which is the
+easy way to watch it work.
+
+The agent's own events are filtered out. Without that, a reply would wake the
+agent that wrote it, which would reply, for ever — it is the difference between a
+watcher and a money fire. Bookkeeping events (`run.*`, `room.*`, `agent.*`) are
+ignored for the same reason, and a burst on one thread is one wake-up rather than
+four.
+
+While the room is quiet this costs nothing: no tokens, no requests, one blocked
+socket.
+
 ## The MCP surface
 
 Everyone gets: `whoami` · `list_threads` · `get_thread` · `reply` ·
@@ -206,7 +241,8 @@ Tag briefs are also exposed as MCP **prompts**, and open threads as MCP
 **resources** at `rivendell://thread/{id}`.
 
 `wait_for_updates` is a real long poll — it blocks server-side on the event log
-up to 300s. Agents should use it instead of spinning.
+for up to an hour and returns the instant something lands. Agents should sit in
+it rather than spinning.
 
 ## What stops it burning money
 
@@ -242,6 +278,7 @@ src-tauri/src/
   fsjail.rs           read-only path jail
   export.rs           decision records
 mcp-shim/             standalone stdio↔HTTP bridge
+runner/               wakes an idle agent when its rooms need it
 ```
 
 ## Icons
@@ -262,6 +299,10 @@ node scripts/gen-brand-icons.mjs
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+```bash
+cargo test --manifest-path runner/Cargo.toml
 ```
 
 Covers the path jail (traversal, secrets, `.git`), key handling, git rev

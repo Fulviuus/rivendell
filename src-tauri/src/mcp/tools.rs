@@ -145,7 +145,7 @@ pub fn common_tools() -> Vec<Value> {
             obj(
                 json!({
                     "cursor": {"type": "integer", "description": "Last seq you have seen. Omit to start from now."},
-                    "timeout_s": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Default 60."}
+                    "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Default 60. Go long — the call is cheap and returns the moment anything happens."}
                 }),
                 &[],
             ),
@@ -532,7 +532,7 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
         .get("timeout_s")
         .and_then(|v| v.as_i64())
         .unwrap_or(60)
-        .clamp(1, 300) as u64;
+        .clamp(1, 3600) as u64;
     // Subscribe before the first read, otherwise an event landing between the
     // query and the subscribe would be missed and we would block for nothing.
     let mut rx = store.events.subscribe();
@@ -556,6 +556,8 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
             return Ok(serde_json::to_string_pretty(&json!({
                 "next_cursor": next,
                 "events": rows,
+                "then": "Act on these, then call wait_for_updates again with this next_cursor. \
+                         Staying in the loop is how you keep seeing work.",
             }))?);
         }
         let now = tokio::time::Instant::now();

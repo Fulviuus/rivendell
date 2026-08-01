@@ -178,6 +178,8 @@ case "${1:-run}" in
     info "clean"
     bold "Rust"
     cargo test --manifest-path src-tauri/Cargo.toml
+    bold "Runner"
+    cargo test --manifest-path runner/Cargo.toml
     ;;
 
   -h|--help|help)
