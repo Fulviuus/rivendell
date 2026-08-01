@@ -194,10 +194,13 @@ export function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () =
 export function ConnectionModal({
   bundle,
   name,
+  rotated,
   onClose,
 }: {
   bundle: NewAgentKey;
   name: string;
+  /** True when this replaced an existing key rather than being the first. */
+  rotated?: boolean;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"cli" | "json" | "shim">("cli");
@@ -207,10 +210,20 @@ export function ConnectionModal({
     <Modal
       wide
       title={`${name}'s API key`}
-      subtitle="Shown once. Only a hash is stored — if you lose it, issue a new one."
+      subtitle={
+        rotated
+          ? "A new key. The previous one stopped working just now."
+          : "Copy it now — this is the only time it is shown."
+      }
       onClose={onClose}
     >
       <div className="space-y-4">
+        {rotated && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/25">
+            Anything still running with {name}'s old key is now getting 401s. Update it with the
+            key below, or restart it.
+          </p>
+        )}
         <div>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-[11.5px] font-medium tracking-wide text-soft uppercase">

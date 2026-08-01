@@ -44,7 +44,14 @@ export function ProjectSettings({
   const [agents, setAgents] = useState<Agent[]>([]);
   const [adding, setAdding] = useState<{ id: number; name: string } | null>(null);
   const [editing, setEditing] = useState<Agent | null>(null);
-  const [revealed, setRevealed] = useState<{ key: NewAgentKey; name: string } | null>(null);
+  const [revealed, setRevealed] = useState<{
+    key: NewAgentKey;
+    name: string;
+    rotated: boolean;
+  } | null>(null);
+  // Rotating is destructive — it breaks whatever is using the current key —
+  // so it asks first rather than firing on a single click of a small icon.
+  const [rotating, setRotating] = useState<Agent | null>(null);
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [confirmText, setConfirmText] = useState("");
@@ -76,6 +83,7 @@ export function ProjectSettings({
       <ConnectionModal
         bundle={revealed.key}
         name={revealed.name}
+        rotated={revealed.rotated}
         onClose={() => setRevealed(null)}
       />
     );
@@ -90,11 +98,59 @@ export function ProjectSettings({
           setAdding(null);
           await loadAgents();
           await refreshAgents();
-          setRevealed({ key, name: agentName });
+          setRevealed({ key, name: agentName, rotated: false });
         }}
       />
     );
   }
+  if (rotating) {
+    return (
+      <Modal
+        title={`Issue a new key for ${rotating.name}?`}
+        subtitle="The current one stops working immediately."
+        onClose={() => setRotating(null)}
+      >
+        <div className="space-y-3.5">
+          <p className="text-[13px] leading-relaxed text-base">
+            Rivendell stores only a hash of a key, so the current one cannot be shown again —
+            issuing a new one is the only way to get a working key. Any session already connected
+            as <b>{rotating.name}</b> will start getting 401s until you give it the new key.
+          </p>
+          {rotating.key_preview && (
+            <p className="text-[12px] text-muted">
+              Current key <code className="font-mono text-soft">{rotating.key_preview}</code> will
+              be revoked.
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setRotating(null)}>Cancel</Button>
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const key = await api.rotateAgentKey(rotating.id);
+                  const name = rotating.name;
+                  setRotating(null);
+                  await loadAgents();
+                  setRevealed({ key, name, rotated: true });
+                } catch (e) {
+                  notify("error", errText(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              <Icon name="key" size={12} />
+              Issue new key
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
   if (editing) {
     return (
       <EditAgentModal
@@ -245,15 +301,7 @@ export function ProjectSettings({
                               size="sm"
                               variant="subtle"
                               title="Issue a new key"
-                              onClick={async () => {
-                                try {
-                                  const key = await api.rotateAgentKey(a.id);
-                                  await loadAgents();
-                                  setRevealed({ key, name: a.name });
-                                } catch (e) {
-                                  notify("error", errText(e));
-                                }
-                              }}
+                              onClick={() => setRotating(a)}
                             >
                               <Icon name="key" size={11} />
                             </Button>

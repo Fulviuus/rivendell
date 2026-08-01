@@ -1138,9 +1138,11 @@ async fn revoked_keys_stop_working() {
     let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));
     assert_eq!(code, 401, "a revoked key must stop working immediately");
 
-    // Rotating issues a working key and retires the old one.
+    // Rotating is not "show me the key again" — it mints a new one and the old
+    // one dies with it, which is why the UI asks before doing it.
     h.store.set_agent_revoked(agent_id, false).unwrap();
     let fresh = h.store.rotate_key(agent_id).unwrap();
+    assert_ne!(fresh, key, "rotation must produce a different key");
     let (code, _) = rpc(&h.url, Some(&fresh), "initialize", json!({}));
     assert_eq!(code, 200);
     let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));
