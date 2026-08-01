@@ -872,6 +872,113 @@ async fn status_filter_buckets_cover_everything() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// The revision loop: someone edits, the room is told, and the agent whose
+/// answer is now stale revises it rather than posting a correction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_is_announced_and_can_be_answered() {
+    let h = boot("edits").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_, coder_key) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let (_, asst_key) = h
+        .store
+        .create_agent(room, "helper", "ASSISTANT", None, "", "")
+        .unwrap();
+
+    let (_, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Which one", "body": "…", "tag": "ADVERSARIAL_REVIEW", "quorum": 1}),
+    );
+    let thread_id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+
+    let (is_err, text) = call(
+        &h.url,
+        &asst_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "Breaks on empty input.", "verdict": "CONFIRMED"}),
+    );
+    assert!(!is_err, "{text}");
+    let msg_id = h.store.thread_detail(thread_id).unwrap().messages[0].id;
+    assert!(
+        h.store.thread_detail(thread_id).unwrap().messages[0]
+            .edited_at
+            .is_none(),
+        "not edited yet"
+    );
+
+    // The coder parks on a cursor, then the assistant revises its own reply.
+    let (_, before) = call(&h.url, &coder_key, "wait_for_updates", json!({"timeout_s": 1}));
+    let cursor = serde_json::from_str::<Value>(&before).unwrap()["next_cursor"]
+        .as_i64()
+        .unwrap();
+
+    let (is_err, text) = call(
+        &h.url,
+        &asst_key,
+        "edit_reply",
+        json!({
+            "message_id": msg_id,
+            "body": "Re-checked against the edited topic: the empty case is guarded.",
+            "verdict": "REFUTED"
+        }),
+    );
+    assert!(!is_err, "{text}");
+
+    let d = h.store.thread_detail(thread_id).unwrap();
+    assert!(d.messages[0].edited_at.is_some(), "edit must be marked");
+    assert_eq!(d.messages[0].verdict.as_deref(), Some("REFUTED"));
+    assert_eq!(d.messages.len(), 1, "editing must not add a message");
+
+    // The coder is told, and the old verdict is on the event so the change is
+    // not silent.
+    let (_, got) = call(
+        &h.url,
+        &coder_key,
+        "wait_for_updates",
+        json!({"cursor": cursor, "timeout_s": 5}),
+    );
+    let got: Value = serde_json::from_str(&got).unwrap();
+    let edit = got["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "message.edited")
+        .expect("an edit must be announced");
+    assert_eq!(edit["payload"]["previous_verdict"], "CONFIRMED");
+    assert_eq!(edit["payload"]["verdict"], "REFUTED");
+
+    // You may only rewrite your own words.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "edit_reply",
+        json!({"message_id": msg_id, "body": "actually it is fine", "verdict": "REFUTED"}),
+    );
+    assert!(is_err, "one participant must not rewrite another's: {text}");
+
+    // A tag's verdict rules still apply to an edit.
+    let (is_err, text) = call(
+        &h.url,
+        &asst_key,
+        "edit_reply",
+        json!({"message_id": msg_id, "body": "hm", "verdict": "APPROVED"}),
+    );
+    assert!(is_err, "an edit must not smuggle in a verdict the tag forbids: {text}");
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rooms_are_isolated() {
     let h = boot("isolation").await;

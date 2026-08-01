@@ -133,6 +133,7 @@ pub fn run() {
             commands::get_thread,
             commands::create_thread,
             commands::reply,
+            commands::edit_message,
             commands::update_thread,
             commands::resolve_thread,
             commands::set_thread_status,

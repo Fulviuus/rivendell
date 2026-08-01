@@ -267,6 +267,18 @@ pub fn reply(state: State<'_, AppState>, input: NewReply, as_agent_id: Option<i6
 }
 
 #[tauri::command]
+pub fn edit_message(
+    state: State<'_, AppState>,
+    message_id: i64,
+    input: NewReply,
+    as_agent_id: Option<i64>,
+) -> Result<()> {
+    let detail = state.store.thread_detail(input.thread_id)?;
+    let ctx = actor(&state.store, detail.summary.room_id, as_agent_id)?;
+    state.store.edit_message(&ctx, input, message_id)
+}
+
+#[tauri::command]
 pub fn update_thread(
     state: State<'_, AppState>,
     thread_id: i64,

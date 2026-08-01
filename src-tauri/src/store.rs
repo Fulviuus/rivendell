@@ -1210,7 +1210,7 @@ impl Store {
             "SELECT m.id,m.thread_id,m.agent_id,a.name,a.role,
                     COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
                     a.color,
-                    m.body,m.verdict,m.severity,m.refs,m.tokens_in,m.tokens_out,m.cost_usd,m.created_at
+                    m.body,m.verdict,m.severity,m.refs,m.tokens_in,m.tokens_out,m.cost_usd,m.created_at,m.edited_at
              FROM messages m
              JOIN agents a ON a.id=m.agent_id
              LEFT JOIN agent_profiles p ON p.id=a.profile_id
@@ -1235,6 +1235,7 @@ impl Store {
                     tokens_out: r.get(12)?,
                     cost_usd: r.get(13)?,
                     created_at: r.get(14)?,
+                    edited_at: r.get(15)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1329,44 +1330,9 @@ impl Store {
             }
         }
 
-        // --- verdict validation ------------------------------------------
         let tag = Self::tag(&guard, &tag_key)?;
-        let verdict = match input.verdict.as_deref().map(str::trim) {
-            Some(v) if !v.is_empty() => {
-                let v = v.to_ascii_uppercase();
-                if !tag.verdict_options.is_empty() && !tag.verdict_options.contains(&v) {
-                    return Err(Error::Invalid(format!(
-                        "verdict for a {} thread must be one of {}",
-                        tag.key,
-                        tag.verdict_options.join(", ")
-                    )));
-                }
-                Some(v)
-            }
-            _ => {
-                if tag.requires_verdict && actor.role == "ASSISTANT" {
-                    return Err(Error::Invalid(format!(
-                        "a {} reply must carry a verdict: one of {}",
-                        tag.key,
-                        tag.verdict_options.join(", ")
-                    )));
-                }
-                None
-            }
-        };
-        let severity = match input.severity.as_deref().map(str::trim) {
-            Some(s) if !s.is_empty() => {
-                let s = s.to_ascii_uppercase();
-                if !SEVERITIES.contains(&s.as_str()) {
-                    return Err(Error::Invalid(format!(
-                        "severity must be one of {}",
-                        SEVERITIES.join(", ")
-                    )));
-                }
-                Some(s)
-            }
-            _ => None,
-        };
+        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref(), &actor.role)?;
+        let severity = Self::validate_severity(input.severity.as_deref())?;
 
         let refs = input.refs.unwrap_or(serde_json::json!([]));
         let created = now();
@@ -1458,6 +1424,160 @@ impl Store {
              VALUES(?1,?2,?3,?4,?5,?6)",
             params![agent_id, thread_id, path, allowed as i64, reason, now()],
         );
+    }
+
+
+    fn validate_verdict(tag: &Tag, raw: Option<&str>, role: &str) -> Result<Option<String>> {
+        match raw.map(str::trim) {
+            Some(v) if !v.is_empty() => {
+                let v = v.to_ascii_uppercase();
+                if !tag.verdict_options.is_empty() && !tag.verdict_options.contains(&v) {
+                    return Err(Error::Invalid(format!(
+                        "verdict for a {} thread must be one of {}",
+                        tag.key,
+                        tag.verdict_options.join(", ")
+                    )));
+                }
+                Ok(Some(v))
+            }
+            _ => {
+                if tag.requires_verdict && role == "ASSISTANT" {
+                    return Err(Error::Invalid(format!(
+                        "a {} reply must carry a verdict: one of {}",
+                        tag.key,
+                        tag.verdict_options.join(", ")
+                    )));
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn validate_severity(raw: Option<&str>) -> Result<Option<String>> {
+        match raw.map(str::trim) {
+            Some(s) if !s.is_empty() => {
+                let s = s.to_ascii_uppercase();
+                if !SEVERITIES.contains(&s.as_str()) {
+                    return Err(Error::Invalid(format!(
+                        "severity must be one of {}",
+                        SEVERITIES.join(", ")
+                    )));
+                }
+                Ok(Some(s))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Revise a message you wrote.
+    ///
+    /// Only ever your own: letting one participant rewrite another's words
+    /// would make the verdicts in an exported decision record unattributable,
+    /// which is the one thing that record exists to guarantee.
+    ///
+    /// The edit is announced on the event log, so an assistant whose reply was
+    /// based on the old text can notice and revise its own answer.
+    pub fn edit_message(&self, actor: &AgentCtx, input: NewReply, message_id: i64) -> Result<()> {
+        if input.body.trim().is_empty() {
+            return Err(Error::Invalid("a message needs a body".into()));
+        }
+
+        let mut guard = self.lock();
+        let (author, thread_id, prev_verdict, prev_severity, prev_body): (
+            i64, i64, Option<String>, Option<String>, String,
+        ) = guard
+            .query_row(
+                "SELECT agent_id, thread_id, verdict, severity, body FROM messages WHERE id=?1",
+                params![message_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("message {message_id}")))?;
+
+        if author != actor.id {
+            return Err(Error::Forbidden(
+                "you can only edit your own messages".into(),
+            ));
+        }
+
+        let (room_id, status, tag_key): (i64, String, String) = guard.query_row(
+            "SELECT room_id, status, tag FROM threads WHERE id=?1",
+            params![thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if room_id != actor.room_id {
+            return Err(Error::Forbidden("that thread is in another room".into()));
+        }
+        // Agents are held to the room's state; the human is the override.
+        if !actor.is_human() {
+            if actor.paused {
+                return Err(Error::Forbidden(format!(
+                    "room #{} is paused",
+                    actor.room_name
+                )));
+            }
+            if is_terminal(&status) {
+                return Err(Error::Forbidden(format!("thread {thread_id} is {status}")));
+            }
+        }
+
+        let tag = Self::tag(&guard, &tag_key)?;
+        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref(), &actor.role)?;
+        let severity = Self::validate_severity(input.severity.as_deref())?;
+        let refs = input.refs.clone().unwrap_or(serde_json::json!([]));
+        let edited = now();
+
+        let tx = guard.transaction()?;
+        tx.execute(
+            "UPDATE messages
+             SET body=?1, verdict=?2, severity=?3, refs=?4, edited_at=?5
+             WHERE id=?6",
+            params![input.body, verdict, severity, refs.to_string(), edited, message_id],
+        )?;
+        tx.execute("UPDATE threads SET updated_at=?1 WHERE id=?2", params![edited, thread_id])?;
+        // Keep search honest — otherwise the old wording stays findable.
+        let _ = tx.execute(
+            "UPDATE search_index SET body=?1 WHERE kind='message' AND ref_id=?2",
+            params![input.body, message_id],
+        );
+
+        // The previous verdict is worth keeping: it is the load-bearing part of
+        // a reply, and the event log is where the trail lives. The old body is
+        // not retained — only whether it changed.
+        let notice = Self::append_event(
+            &tx,
+            Some(room_id),
+            Some(thread_id),
+            "message.edited",
+            Some(actor.id),
+            serde_json::json!({
+                "message_id": message_id,
+                "body_changed": prev_body != input.body,
+                "previous_verdict": prev_verdict,
+                "previous_severity": prev_severity,
+                "verdict": verdict,
+                "severity": severity,
+                "role": actor.role,
+            }),
+        )?;
+        tx.commit()?;
+        drop(guard);
+        self.publish(notice);
+
+        // A resolved thread already wrote its record; leaving it stale would
+        // make the file disagree with the app.
+        if is_terminal(&status) {
+            if let Ok(detail) = self.thread_detail(thread_id) {
+                let conn = self.lock();
+                if let Ok(folder) = Self::room_folder(&conn, room_id) {
+                    drop(conn);
+                    if let Err(e) = export::write_thread(&folder, &detail) {
+                        tracing::warn!("re-export after edit failed: {e}");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ search ---

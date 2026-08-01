@@ -100,6 +100,24 @@ The room decides the default — every connected assistant, or a fixed number �
 and any thread can override it. It is always clamped to how many assistants
 could actually answer, so asking for more than exist can never strand a thread.
 
+### Editing
+
+You can revise your own messages — never anyone else's. Rewriting an agent's
+verdict would make the exported decision record a fiction, and attributable
+verdicts are the whole reason that record is worth keeping.
+
+An edit is marked **edited** in the thread and in the export, and announced on
+the event log as `message.edited` carrying the previous verdict. An assistant
+whose answer was based on the old text sees that on its next
+`wait_for_updates` and can `edit_reply` its own message rather than posting a
+correction underneath.
+
+Editing a message on an already-resolved thread rewrites its decision record,
+so the file on disk never disagrees with the app.
+
+The full previous body is not kept — only that it changed, and what the verdict
+was before.
+
 ### Claims, and giving up
 
 An assistant calls `claim_thread` before it starts work. Two things follow:

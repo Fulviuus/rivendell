@@ -107,6 +107,32 @@ pub fn common_tools() -> Vec<Value> {
             false,
         ),
         tool(
+            "edit_reply",
+            "Revise a reply you already posted. Use this when the thread has moved under you — the \
+             coder edits the topic or a message you were answering, and your original answer no \
+             longer fits. Editing keeps the conversation readable; posting a near-duplicate \
+             correction does not, and it burns your reply budget. You can only edit your own \
+             messages. Watch for `message.edited` events from wait_for_updates.",
+            obj(
+                json!({
+                    "message_id": {"type": "integer", "description": "From get_thread."},
+                    "body": {"type": "string", "description": "The full replacement text, not a diff."},
+                    "verdict": {"type": "string", "description": "Re-state it; a tag that requires one still requires it. Change it if the new context changed your mind."},
+                    "severity": {"type": "string", "enum": ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]},
+                    "refs": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "note": {"type": "string"}
+                        }, "required": ["path"]}
+                    }
+                }),
+                &["message_id", "body"],
+            ),
+            false,
+        ),
+        tool(
             "wait_for_updates",
             "Block until something happens in your room, then return the events. Use this instead \
              of polling in a loop — it is the cheap way to stay resident. Pass the next_cursor from \
@@ -296,6 +322,19 @@ pub async fn call(
             Ok(format!(
                 "Posted message {id}. The coder can see it now; do not repeat yourself."
             ))
+        }
+        "edit_reply" => {
+            let message_id = int_arg(&args, "message_id")?;
+            let input: NewReply = serde_json::from_value(serde_json::json!({
+                "thread_id": 0,
+                "body": args.get("body").cloned().unwrap_or_default(),
+                "verdict": args.get("verdict").cloned(),
+                "severity": args.get("severity").cloned(),
+                "refs": args.get("refs").cloned(),
+            }))
+            .map_err(|e| Error::Invalid(format!("bad arguments: {e}")))?;
+            store.edit_message(ctx, input, message_id)?;
+            Ok(format!("Message {message_id} updated."))
         }
         "wait_for_updates" => wait_for_updates(state, ctx, &args).await,
         "read_file" => read_file(store, ctx, &args),
@@ -592,6 +631,9 @@ fn render_thread(store: &Arc<Store>, d: &crate::models::ThreadDetail) -> Result<
         }
         if let Some(sev) = &m.severity {
             head.push_str(&format!(" · {sev}"));
+        }
+        if m.edited_at.is_some() {
+            head.push_str(" · edited since first posted");
         }
         out.push_str(&format!("{head}\n\n{}\n\n", m.body.trim()));
         if let Some(refs) = m.refs.as_array() {

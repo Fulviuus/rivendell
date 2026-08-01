@@ -22,6 +22,7 @@ const SOURCES = {
   gemini: [`${SIMPLE}/googlegemini.svg`, "solid"],
   cursor: [`${SIMPLE}/cursor.svg`, "solid"],
   gear: [`${LUCIDE}/settings.svg`, "line"],
+  pencil: [`${LUCIDE}/pencil.svg`, "line"],
   sliders: [`${LUCIDE}/sliders-horizontal.svg`, "line"],
   sun: [`${LUCIDE}/sun.svg`, "line"],
   moon: [`${LUCIDE}/moon.svg`, "line"],

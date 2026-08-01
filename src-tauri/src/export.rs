@@ -91,6 +91,9 @@ pub fn render(t: &ThreadDetail) -> String {
         if let Some(sev) = &m.severity {
             head.push_str(&format!(" · {sev}"));
         }
+        if m.edited_at.is_some() {
+            head.push_str(" · _edited_");
+        }
         out.push_str(&head);
         out.push_str(&format!("\n\n<sub>{}</sub>\n\n", m.created_at));
         out.push_str(m.body.trim());

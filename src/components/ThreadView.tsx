@@ -20,7 +20,7 @@ import {
 import type { Message, ThreadContextItem, ThreadDetail } from "../types";
 
 export function ThreadView() {
-  const { thread, tags, rooms, roomId, notify, refreshThread } = useStore();
+  const { thread, tags, agents, rooms, roomId, notify, refreshThread } = useStore();
   const room = rooms.find((r) => r.id === roomId);
   const [composing, setComposing] = useState("");
   const [resolving, setResolving] = useState(false);
@@ -42,6 +42,7 @@ export function ThreadView() {
     );
   }
 
+  const meId = agents.find((a) => a.role === "HUMAN")?.id ?? -1;
   const done = thread.status === "RESOLVED" || thread.status === "WONTFIX";
 
   async function post() {
@@ -156,7 +157,15 @@ export function ThreadView() {
 
         <section className="space-y-4">
           {thread.messages.map((m) => (
-            <MessageCard key={m.id} message={m} />
+            <MessageCard
+              key={m.id}
+              message={m}
+              threadId={thread.id}
+              // You can revise your own words; nobody else's. Rewriting an
+              // agent's verdict would make the exported record a fiction.
+              editable={m.agent_id === meId}
+              onEdited={refreshThread}
+            />
           ))}
         </section>
 
@@ -307,11 +316,46 @@ function ContextBlock({ item }: { item: ThreadContextItem }) {
   );
 }
 
-function MessageCard({ message: m }: { message: Message }) {
+function MessageCard({
+  message: m,
+  threadId,
+  editable,
+  onEdited,
+}: {
+  message: Message;
+  threadId: number;
+  editable: boolean;
+  onEdited: () => Promise<void> | void;
+}) {
+  const notify = useStore((s) => s.notify);
   const isAssistant = m.agent_role === "ASSISTANT";
   const tone = agentTone(m.agent_name, m.color);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.body);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    if (!draft.trim()) return;
+    setBusy(true);
+    try {
+      await api.editMessage(m.id, {
+        thread_id: threadId,
+        body: draft,
+        verdict: m.verdict,
+        severity: m.severity,
+        refs: m.refs,
+      });
+      setEditing(false);
+      await onEdited();
+    } catch (e) {
+      notify("error", errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <article>
+    <article className="group">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <Avatar name={m.agent_name} icon={m.icon} color={m.color} size={24} />
         <span className="font-semibold text-strong">{m.agent_name}</span>
@@ -322,18 +366,67 @@ function MessageCard({ message: m }: { message: Message }) {
         )}
         {m.verdict && <VerdictChip verdict={m.verdict} severity={m.severity} />}
         <span className="text-[11.5px] text-faint">{ago(m.created_at)}</span>
+        {m.edited_at && (
+          <span className="text-[11.5px] text-faint" title={new Date(m.edited_at).toLocaleString()}>
+            · edited {ago(m.edited_at)}
+          </span>
+        )}
         {m.tokens_out > 0 && (
           <span className="text-[11px] tabular-nums text-faint">
             {(m.tokens_in + m.tokens_out).toLocaleString()} tok
           </span>
         )}
+        {editable && !editing && (
+          <button
+            onClick={() => {
+              setDraft(m.body);
+              setEditing(true);
+            }}
+            title="Edit this message"
+            className="ml-auto rounded p-1 text-faint opacity-0 transition group-hover:opacity-100 hover:bg-hover hover:text-strong"
+          >
+            <Icon name="pencil" size={12} />
+          </button>
+        )}
       </div>
-      <div
-        className={`prose-msg rounded-xl border-l-2 p-3.5 shadow-card ring-1 ring-line ${tone.edge} ${
-          isAssistant ? `bg-card ${tone.tint}` : "bg-chip/50"
-        }`}
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(m.body) }}
-      />
+
+      {editing ? (
+        <div className="rounded-xl bg-card p-2.5 shadow-card ring-1 ring-accent/40">
+          <Textarea
+            autoFocus
+            rows={Math.min(16, Math.max(3, draft.split("\n").length + 1))}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setEditing(false);
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                save();
+              }
+            }}
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-[11.5px] text-faint">
+              assistants are told this changed and can revise their replies
+            </span>
+            <div className="flex gap-1.5">
+              <Button size="sm" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={save} disabled={busy || !draft.trim()}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div
+          className={`prose-msg rounded-xl border-l-2 p-3.5 shadow-card ring-1 ring-line ${tone.edge} ${
+            isAssistant ? `bg-card ${tone.tint}` : "bg-chip/50"
+          }`}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(m.body) }}
+        />
+      )}
       {m.refs.length > 0 && (
         <ul className="mt-1.5 space-y-0.5 pl-1">
           {m.refs.map((r, i) => (

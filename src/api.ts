@@ -76,6 +76,16 @@ export const api = {
     severity?: string | null;
     refs?: unknown;
   }) => invoke<number>("reply", { input, asAgentId: null }),
+  editMessage: (
+    messageId: number,
+    input: {
+      thread_id: number;
+      body: string;
+      verdict?: string | null;
+      severity?: string | null;
+      refs?: unknown;
+    },
+  ) => invoke<void>("edit_message", { messageId, input, asAgentId: null }),
   updateThread: (threadId: number, body: string) =>
     invoke<void>("update_thread", { threadId, body, asAgentId: null }),
   resolveThread: (threadId: number, summary: string, status?: string) =>

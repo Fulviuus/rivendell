@@ -153,7 +153,9 @@ CREATE TABLE IF NOT EXISTS messages (
   tokens_in  INTEGER NOT NULL DEFAULT 0,
   tokens_out INTEGER NOT NULL DEFAULT 0,
   cost_usd   REAL    NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- Set the first time the author revises the message. Null means untouched.
+  edited_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);
 
@@ -228,6 +230,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("rooms", "quorum_mode", "TEXT NOT NULL DEFAULT 'all'"),
         ("rooms", "quorum_fixed", "INTEGER NOT NULL DEFAULT 1"),
         ("rooms", "response_timeout_secs", "INTEGER NOT NULL DEFAULT 300"),
+        ("messages", "edited_at", "TEXT"),
     ] {
         let exists: bool = conn
             .prepare(&format!(

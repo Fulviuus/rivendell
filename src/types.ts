@@ -100,6 +100,8 @@ export interface Message {
   tokens_out: number;
   cost_usd: number;
   created_at: string;
+  /** Set once the author has revised it. */
+  edited_at: string | null;
 }
 
 export interface ThreadClaim {

@@ -112,6 +112,8 @@ pub struct Message {
     pub tokens_out: i64,
     pub cost_usd: f64,
     pub created_at: String,
+    /// Set once the author has revised it.
+    pub edited_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
