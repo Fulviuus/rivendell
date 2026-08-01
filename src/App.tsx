@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { NewThreadModal } from "./components/NewThreadModal";
-import { RoomSettings } from "./components/RoomSettings";
 import { Sidebar } from "./components/Sidebar";
 import { ThreadList } from "./components/ThreadList";
 import { ThreadView } from "./components/ThreadView";
@@ -12,7 +11,6 @@ import { Button, Icon } from "./ui";
 export default function App() {
   const { boot, ready, roomId, toast, notify } = useStore();
   const [showNewThread, setShowNewThread] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [theme, setThemeState] = useState<Theme>(storedTheme);
   const [fatal, setFatal] = useState<string | null>(null);
 
@@ -78,15 +76,6 @@ export default function App() {
           >
             <Icon name={resolve(theme) === "dark" ? "sun" : "moon"} size={14} />
           </Button>
-          <Button
-            variant="subtle"
-            size="sm"
-            title="Room settings"
-            onClick={() => setShowSettings(true)}
-            disabled={roomId === null}
-          >
-            <Icon name="gear" size={14} />
-          </Button>
         </div>
         <ThreadView />
       </div>
@@ -94,7 +83,6 @@ export default function App() {
       {showNewThread && roomId !== null && (
         <NewThreadModal onClose={() => setShowNewThread(false)} />
       )}
-      {showSettings && roomId !== null && <RoomSettings onClose={() => setShowSettings(false)} />}
 
       {toast && (
         <div

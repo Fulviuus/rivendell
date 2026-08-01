@@ -6,12 +6,14 @@ import { api, errText } from "../api";
 import { useStore } from "../store";
 import { Button, Field, Icon, Input, Modal, swatchFor, Textarea, type AgentColor } from "../ui";
 import { ProjectSettings } from "./ProjectSettings";
+import { RoomSettings } from "./RoomSettings";
 import type { Project } from "../types";
 
 export function Sidebar() {
   const { projects, rooms, roomId, selectRoom, refreshRooms, notify, serverUrl } = useStore();
   const [newRoomFor, setNewRoomFor] = useState<Project | null>(null);
   const [settingsFor, setSettingsFor] = useState<Project | null>(null);
+  const [settingsForRoom, setSettingsForRoom] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const grouped = useMemo(
@@ -94,32 +96,49 @@ export function Sidebar() {
             {rs.map((room) => {
               const active = room.id === roomId;
               return (
-                <button
-                  key={room.id}
-                  onClick={() => selectRoom(room.id)}
-                  className={`flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left transition ${
-                    active
-                      ? "bg-accent-soft font-medium text-accent-text ring-1 ring-accent/25"
-                      : "text-soft hover:bg-hover"
-                  }`}
-                >
-                  <Icon name="hash" size={13} className={active ? "" : "text-faint"} />
-                  <span className="flex-1 truncate">{room.name}</span>
-                  {room.paused && (
-                    <span title="Paused — nothing is dispatched or accepted">
-                      <Icon name="pause" size={11} className="text-amber-500" />
-                    </span>
-                  )}
-                  {room.open_threads > 0 && (
-                    <span
-                      className={`rounded-full px-1.5 text-[10.5px] tabular-nums ${
-                        active ? "bg-accent text-on-accent" : "bg-chip text-muted"
-                      }`}
-                    >
-                      {room.open_threads}
-                    </span>
-                  )}
-                </button>
+                // A row, not a single button: the gear has to be its own
+                // control, and nesting a button inside a button is invalid.
+                <div key={room.id} className="group/room relative flex items-center">
+                  <button
+                    onClick={() => selectRoom(room.id)}
+                    className={`flex w-full items-center gap-1.5 rounded-lg py-1.5 pr-7 pl-2 text-left transition ${
+                      active
+                        ? "bg-accent-soft font-medium text-accent-text ring-1 ring-accent/25"
+                        : "text-soft hover:bg-hover"
+                    }`}
+                  >
+                    <Icon name="hash" size={13} className={active ? "" : "text-faint"} />
+                    <span className="flex-1 truncate">{room.name}</span>
+                    {room.paused && (
+                      <span title="Paused — nothing is dispatched or accepted">
+                        <Icon name="pause" size={11} className="text-amber-500" />
+                      </span>
+                    )}
+                    {room.open_threads > 0 && (
+                      <span
+                        className={`rounded-full px-1.5 text-[10.5px] tabular-nums transition group-hover/room:opacity-0 ${
+                          active ? "bg-accent text-on-accent" : "bg-chip text-muted"
+                        }`}
+                      >
+                        {room.open_threads}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    title={`Settings and agents for #${room.name}`}
+                    onClick={async () => {
+                      // Room settings reads the selected room, so select it
+                      // first — otherwise the gear on an unselected room would
+                      // configure a different one.
+                      if (room.id !== roomId) await selectRoom(room.id);
+                      setSettingsForRoom(true);
+                    }}
+                    className="absolute right-1 rounded p-0.5 text-muted opacity-0 transition group-hover/room:opacity-100 hover:bg-hover hover:text-strong"
+                  >
+                    <Icon name="gear" size={12} />
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -147,6 +166,8 @@ export function Sidebar() {
           <span className="truncate">{serverUrl ? serverUrl.replace(/^http:\/\//, "") : "starting…"}</span>
         </div>
       </div>
+
+      {settingsForRoom && <RoomSettings onClose={() => setSettingsForRoom(false)} />}
 
       {settingsFor && (
         <ProjectSettings

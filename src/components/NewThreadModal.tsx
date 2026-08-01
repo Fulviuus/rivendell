@@ -101,7 +101,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
   const nowhereHint =
     elsewhere.length === 0
-      ? `no assistants in #${room?.name ?? "this room"} — add one in room settings, the gear above`
+      ? `no assistants in #${room?.name ?? "this room"} — add one from the gear beside the room`
       : `none in #${room?.name} · ${elsewhere
           .map((e) => `${e.names.join(" and ")} are in #${e.room}`)
           .join(", ")}`;
@@ -270,8 +270,8 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
               {assistants.length === 0 && (
                 <p className="px-1 py-0.5 text-[12px] leading-relaxed text-faint">
                   {elsewhere.length === 0
-                    ? "None here. Add one from room settings — the gear above the thread."
-                    : `An agent belongs to one room. Either open this thread in #${elsewhere[0].room}, or add an assistant to #${room?.name} from room settings.`}
+                    ? "None here. Hover the room in the sidebar and click its gear to add one."
+                    : `An agent belongs to one room. Either open this thread in #${elsewhere[0].room}, or add an assistant to #${room?.name} from the gear beside it in the sidebar.`}
                 </p>
               )}
               {assistants.map((a) => (

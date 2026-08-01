@@ -241,8 +241,8 @@ export function ProjectSettings({
           </h3>
           <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
             An agent belongs to one room, and its API key is what puts it there. The same tool in
-            two rooms is two agents with two keys. You can also manage these from a room's own
-            settings — the gear above the thread.
+            two rooms is two agents with two keys. You can also manage these from the gear
+            beside a room in the sidebar.
           </p>
 
           <div className="space-y-3">

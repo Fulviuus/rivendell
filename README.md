@@ -165,8 +165,8 @@ reply hands the ball back to the room.
 
 ## Connecting an agent
 
-Create an agent in **project settings** (the gear on a project in the
-sidebar), under the room it should join — an agent belongs to one room, and its
+Create an agent from the gear beside a **room** in the sidebar (or in project
+settings, which lists every room at once) — an agent belongs to one room, and its
 key is what puts it there. The key is shown once — only a SHA-256
 digest is stored. For a Claude Code session:
 
