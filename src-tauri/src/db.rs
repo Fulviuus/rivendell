@@ -214,6 +214,30 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 );
 "#;
 
+/// Copies the database aside before anything that rewrites a table.
+///
+/// A migration that goes wrong can be unrecoverable, and the loss is silent —
+/// you notice when content is missing, long after the run that did it. A file
+/// copy costs nothing at this size and turns that into an inconvenience.
+fn back_up_before_migrating(path: &std::path::Path, conn: &Connection) -> rusqlite::Result<()> {
+    let needed = {
+        let mut stmt =
+            conn.prepare("SELECT 1 FROM pragma_table_info('agents') WHERE name='room_id'")?;
+        stmt.exists([])?
+    };
+    if !needed || !path.exists() {
+        return Ok(());
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let backup = path.with_extension(format!("pre-migration-{stamp}.db"));
+    // A plain file copy would miss anything still in the WAL.
+    let mut target = Connection::open(&backup)?;
+    rusqlite::backup::Backup::new(conn, &mut target)?
+        .run_to_completion(64, std::time::Duration::from_millis(0), None)?;
+    tracing::info!("database backed up to {}", backup.display());
+    Ok(())
+}
+
 pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -228,6 +252,7 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         [if has_fts { "1" } else { "0" }],
     )?;
+    back_up_before_migrating(path, &conn)?;
     migrate_agents_to_projects(&conn)?;
     migrate(&conn)?;
     seed(&conn)?;
@@ -691,6 +716,82 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(!leftover, "no debris is left for the next run to trip on");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Rebuilding `agents` drops the table, and `threads.author_agent_id`
+    /// references it ON DELETE CASCADE. If foreign keys are enforced at that
+    /// moment, every thread in the database goes with it — and everything that
+    /// cascades from threads after that.
+    ///
+    /// The earlier migration tests had no `threads` table, so there was no
+    /// cascade path for them to expose. This one does.
+    #[test]
+    fn migrating_agents_does_not_take_the_threads_with_them() {
+        let path =
+            std::env::temp_dir().join(format!("rivendell-fkmig-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                   folder_path TEXT NOT NULL UNIQUE, git_remote TEXT, created_at TEXT NOT NULL);
+                 CREATE TABLE rooms (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL
+                   REFERENCES projects(id) ON DELETE CASCADE,
+                   name TEXT NOT NULL, created_at TEXT NOT NULL);
+                 CREATE TABLE agents (
+                   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL REFERENCES rooms(id)
+                     ON DELETE CASCADE,
+                   name TEXT NOT NULL, role TEXT NOT NULL, profile_id INTEGER, key_id TEXT UNIQUE,
+                   key_hash TEXT, key_preview TEXT, system_note TEXT NOT NULL DEFAULT '',
+                   color TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_at TEXT,
+                   UNIQUE(room_id, name));
+                 CREATE TABLE threads (
+                   id INTEGER PRIMARY KEY,
+                   room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                   author_agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                   title TEXT NOT NULL, body TEXT NOT NULL, tag TEXT NOT NULL,
+                   status TEXT NOT NULL, git_dirty INTEGER NOT NULL DEFAULT 0,
+                   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                 CREATE TABLE messages (
+                   id INTEGER PRIMARY KEY,
+                   thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                   agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                   body TEXT NOT NULL, created_at TEXT NOT NULL);
+
+                 INSERT INTO projects VALUES (1,'demo','/tmp/demo-fk',NULL,'t');
+                 INSERT INTO rooms VALUES (1,1,'general','t'), (2,1,'test','t');
+                 INSERT INTO agents (id,room_id,name,role,key_id,created_at)
+                   VALUES (1,1,'you','HUMAN','k1','t'), (2,2,'you','HUMAN','k2','t'),
+                          (3,1,'main','CODER','k3','t');
+                 INSERT INTO threads VALUES (1,1,3,'A real thread','…','FYI','OPEN',0,'t','t');
+                 INSERT INTO messages VALUES (1,1,3,'a real reply','t');",
+            )
+            .unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+
+        let threads: i64 = conn
+            .query_row("SELECT COUNT(*) FROM threads", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(threads, 1, "the migration must not destroy threads");
+        let messages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(messages, 1, "nor the messages that hang off them");
+
+        // The thread's author must still resolve to a real agent.
+        let author: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads t JOIN agents a ON a.id=t.author_agent_id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(author, 1, "and still point at its author");
 
         drop(conn);
         let _ = std::fs::remove_file(&path);
