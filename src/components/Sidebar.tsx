@@ -46,7 +46,7 @@ export function Sidebar() {
     <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-sidebar">
       <div
         data-tauri-drag-region
-        className="titlebar-drag flex h-11 items-center justify-between pr-2 pl-20"
+        className="titlebar-drag flex h-11 items-center justify-end pr-3 pl-20"
       >
         {/* Both variants ship and CSS picks one, so the swap needs no theme
             state threaded down here. */}
@@ -72,7 +72,7 @@ export function Sidebar() {
                 <Icon name="folder" size={13} className="text-faint" />
               )}
               <span
-                className="flex-1 truncate text-[11.5px] font-semibold tracking-wide text-muted uppercase"
+                className="flex-1 truncate text-[11.5px] font-semibold tracking-wide text-soft uppercase"
                 title={project.folder_path}
               >
                 {project.name}
@@ -157,7 +157,7 @@ export function Sidebar() {
           Add project folder
         </Button>
         <div
-          className="flex items-center gap-1.5 px-2 pt-1 text-[11px] text-faint"
+          className="flex items-center gap-1.5 px-2 pt-1 text-[11px] text-muted"
           title={serverUrl || "The MCP server has not started"}
         >
           <span

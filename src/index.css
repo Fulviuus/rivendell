@@ -48,7 +48,7 @@
 :root,
 :root[data-theme="light"] {
   --c-canvas: #f3f5f8;
-  --c-sidebar: #e8ebf1;
+  --c-sidebar: #d6dce8;
   --c-list: #eef0f5;
   --c-card: #ffffff;
   --c-modal: #ffffff;
