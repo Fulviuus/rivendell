@@ -1,3 +1,5 @@
+// The agent dialogs. Agents belong to a room, so they are reached through
+// that room's project settings rather than a global list.
 import { useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
@@ -7,7 +9,6 @@ import {
   ColorPicker,
   CopyButton,
   Field,
-  Icon,
   Input,
   Modal,
   Select,
@@ -15,139 +16,18 @@ import {
 } from "../ui";
 import type { Agent, NewAgentKey } from "../types";
 
-export function AgentsPanel({ onClose }: { onClose: () => void }) {
-  const { agents, rooms, roomId, refreshAgents, notify } = useStore();
-  const room = rooms.find((r) => r.id === roomId);
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<Agent | null>(null);
-  const [revealed, setRevealed] = useState<{ key: NewAgentKey; name: string } | null>(null);
-
-  async function rotate(a: Agent) {
-    try {
-      const key = await api.rotateAgentKey(a.id);
-      await refreshAgents();
-      setRevealed({ key, name: a.name });
-    } catch (e) {
-      notify("error", errText(e));
-    }
-  }
-
-  async function remove(a: Agent) {
-    try {
-      await api.deleteAgent(a.id);
-      await refreshAgents();
-    } catch (e) {
-      notify("error", errText(e));
-    }
-  }
-
-  if (revealed) {
-    return (
-      <ConnectionModal
-        bundle={revealed.key}
-        name={revealed.name}
-        onClose={() => setRevealed(null)}
-      />
-    );
-  }
-
-  if (creating) {
-    return (
-      <NewAgentModal
-        onClose={() => setCreating(false)}
-        onCreated={(key, name) => {
-          setCreating(false);
-          setRevealed({ key, name });
-        }}
-      />
-    );
-  }
-
-  if (editing) {
-    return <EditAgentModal agent={editing} onClose={() => setEditing(null)} />;
-  }
-
-  return (
-    <Modal
-      wide
-      title="Agents"
-      subtitle={room ? `#${room.name} · ${room.project_name}` : "No room selected"}
-      onClose={onClose}
-    >
-      <div className="space-y-2">
-        {agents.length === 0 && (
-          <p className="py-4 text-center text-[12.5px] text-faint">
-            No agents yet. Add a coder for your own session, then the assistants you want it to
-            consult.
-          </p>
-        )}
-
-        {agents.map((a) => (
-          <div
-            key={a.id}
-            className="flex items-center gap-3 rounded-xl bg-card px-3 py-2.5 shadow-card ring-1 ring-line"
-          >
-            <Avatar name={a.name} icon={a.icon} color={a.color} size={28} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`font-semibold ${a.revoked_at ? "text-faint line-through" : "text-strong"}`}
-                >
-                  {a.name}
-                </span>
-                <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
-                  {a.role}
-                </span>
-                {a.profile_label && (
-                  <span className="text-[11.5px] text-faint">{a.profile_label}</span>
-                )}
-              </div>
-              <div className="mt-0.5 flex items-center gap-2 text-[11.5px] text-faint">
-                {a.key_preview && <code className="font-mono">{a.key_preview}</code>}
-              </div>
-              {a.system_note && (
-                <p className="mt-1 text-[12px] leading-snug text-muted">{a.system_note}</p>
-              )}
-            </div>
-
-            <div className="flex shrink-0 gap-1">
-              <Button size="sm" variant="subtle" title="Edit agent" onClick={() => setEditing(a)}>
-                <Icon name="gear" size={12} />
-              </Button>
-              <Button size="sm" variant="subtle" title="Issue a new key" onClick={() => rotate(a)}>
-                <Icon name="key" size={12} />
-              </Button>
-              <Button size="sm" variant="subtle" title="Delete agent" onClick={() => remove(a)}>
-                <Icon name="trash" size={12} />
-              </Button>
-            </div>
-          </div>
-        ))}
-
-        <div className="flex justify-between pt-2">
-          <p className="max-w-md text-[11.5px] leading-relaxed text-faint">
-            Every agent connects the same way: start it yourself, point it at Rivendell with its
-            key, and have it sit on <code className="font-mono">wait_for_updates</code>. Coders open
-            and resolve threads; assistants answer them.
-          </p>
-          <Button variant="primary" onClick={() => setCreating(true)} disabled={!room}>
-            <Icon name="plus" size={13} />
-            New agent
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function NewAgentModal({
+export function NewAgentModal({
+  roomId,
+  roomName,
   onClose,
   onCreated,
 }: {
+  roomId: number;
+  roomName?: string;
   onClose: () => void;
   onCreated: (key: NewAgentKey, name: string) => void;
 }) {
-  const { roomId, profiles, refreshAgents, notify } = useStore();
+  const { profiles, refreshAgents, notify } = useStore();
   const [name, setName] = useState("");
   const [role, setRole] = useState<"CODER" | "ASSISTANT">("ASSISTANT");
   const [profileId, setProfileId] = useState<string>("");
@@ -158,7 +38,7 @@ function NewAgentModal({
   const profile = profiles.find((p) => String(p.id) === profileId);
 
   async function submit() {
-    if (roomId === null || !name.trim()) return;
+    if (!name.trim()) return;
     setBusy(true);
     try {
       const key = await api.createAgent({
@@ -178,7 +58,7 @@ function NewAgentModal({
   }
 
   return (
-    <Modal title="New agent" onClose={onClose}>
+    <Modal title="New agent" subtitle={roomName ? `in #${roomName}` : undefined} onClose={onClose}>
       <div className="space-y-3.5">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name">
@@ -244,7 +124,7 @@ function NewAgentModal({
   );
 }
 
-function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+export function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const { profiles, refreshAgents, refreshThread, notify } = useStore();
   const [name, setName] = useState(agent.name);
   const [note, setNote] = useState(agent.system_note);
@@ -311,7 +191,7 @@ function EditAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void 
   );
 }
 
-function ConnectionModal({
+export function ConnectionModal({
   bundle,
   name,
   onClose,

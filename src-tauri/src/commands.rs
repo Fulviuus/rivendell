@@ -61,6 +61,16 @@ pub fn create_project(state: State<'_, AppState>, name: String, folder: String) 
 }
 
 #[tauri::command]
+pub fn update_project(state: State<'_, AppState>, id: i64, patch: Value) -> Result<()> {
+    state.store.update_project(id, patch)
+}
+
+#[tauri::command]
+pub fn project_stats(state: State<'_, AppState>, id: i64) -> Result<ProjectStats> {
+    state.store.project_stats(id)
+}
+
+#[tauri::command]
 pub fn delete_project(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.store.delete_project(id)
 }

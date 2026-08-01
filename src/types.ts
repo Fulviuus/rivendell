@@ -13,6 +13,7 @@ export interface Project {
   name: string;
   folder_path: string;
   git_remote: string | null;
+  color: string;
   created_at: string;
 }
 

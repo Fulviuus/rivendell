@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { AgentsPanel } from "./components/AgentsPanel";
 import { NewThreadModal } from "./components/NewThreadModal";
 import { RoomSettings } from "./components/RoomSettings";
 import { Sidebar } from "./components/Sidebar";
@@ -12,7 +11,6 @@ import { Button, Icon } from "./ui";
 
 export default function App() {
   const { boot, ready, roomId, toast, notify } = useStore();
-  const [showAgents, setShowAgents] = useState(false);
   const [showNewThread, setShowNewThread] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [theme, setThemeState] = useState<Theme>(storedTheme);
@@ -64,7 +62,7 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <Sidebar onOpenAgents={() => setShowAgents(true)} />
+      <Sidebar />
       <ThreadList onNew={() => setShowNewThread(true)} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -93,7 +91,6 @@ export default function App() {
         <ThreadView />
       </div>
 
-      {showAgents && <AgentsPanel onClose={() => setShowAgents(false)} />}
       {showNewThread && roomId !== null && (
         <NewThreadModal onClose={() => setShowNewThread(false)} />
       )}

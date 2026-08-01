@@ -115,6 +115,8 @@ pub fn run() {
             commands::server_info,
             commands::list_projects,
             commands::create_project,
+            commands::update_project,
+            commands::project_stats,
             commands::delete_project,
             commands::list_rooms,
             commands::create_room,

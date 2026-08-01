@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   folder_path TEXT NOT NULL UNIQUE,
   git_remote  TEXT,
+  color       TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );
 
@@ -231,6 +232,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("rooms", "quorum_fixed", "INTEGER NOT NULL DEFAULT 1"),
         ("rooms", "response_timeout_secs", "INTEGER NOT NULL DEFAULT 300"),
         ("messages", "edited_at", "TEXT"),
+        ("projects", "color", "TEXT NOT NULL DEFAULT ''"),
     ] {
         let exists: bool = conn
             .prepare(&format!(

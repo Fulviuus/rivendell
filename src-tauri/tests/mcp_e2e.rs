@@ -979,6 +979,102 @@ async fn an_edit_is_announced_and_can_be_answered() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// Project edits and the delete cascade. The counts shown before the
+/// confirmation have to be right — they are what the decision is made on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_settings_and_deletion() {
+    let h = boot("project").await;
+    let project = h
+        .store
+        .create_project("Demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (coder_id, _) = h
+        .store
+        .create_agent(room, "main", "CODER", None, "", "")
+        .unwrap();
+    let (_, asst_key) = h
+        .store
+        .create_agent(room, "helper", "ASSISTANT", None, "", "")
+        .unwrap();
+    let coder = h.store.agent_ctx(coder_id).unwrap();
+
+    let t1 = h
+        .store
+        .create_thread(
+            &coder,
+            rivendell_lib::models::NewThread {
+                room_id: room,
+                title: "One".into(),
+                body: "…".into(),
+                tag: "HELP_REQUEST".into(),
+                mentions: vec![],
+                context: vec![],
+                quorum: Some(1),
+                include_diff: false,
+            },
+        )
+        .unwrap();
+    call(
+        &h.url,
+        &asst_key,
+        "reply",
+        json!({"thread_id": t1, "body": "here", "verdict": "ANSWERED"}),
+    );
+
+    // --- rename and recolour ---------------------------------------------
+    h.store
+        .update_project(project.id, json!({"name": "Renamed", "color": "teal"}))
+        .unwrap();
+    let p = h.store.list_projects().unwrap().into_iter().next().unwrap();
+    assert_eq!(p.name, "Renamed");
+    assert_eq!(p.color, "teal");
+
+    // An empty name would leave the sidebar with a blank row.
+    assert!(h.store.update_project(project.id, json!({"name": "  "})).is_err());
+
+    // --- move the working folder -----------------------------------------
+    let moved = h.dir.parent().unwrap().join("rivendell-e2e-project-moved");
+    std::fs::create_dir_all(&moved).unwrap();
+    let moved = std::fs::canonicalize(&moved).unwrap();
+    h.store
+        .update_project(project.id, json!({"folder_path": moved.to_str().unwrap()}))
+        .unwrap();
+    assert_eq!(
+        h.store.agent_ctx(coder_id).unwrap().folder_path,
+        moved.to_string_lossy(),
+        "agents read from the new folder"
+    );
+    assert!(
+        h.store
+            .update_project(project.id, json!({"folder_path": "/definitely/not/here"}))
+            .is_err(),
+        "a folder that does not exist must be refused, not stored"
+    );
+
+    // --- what deletion would destroy -------------------------------------
+    let stats = h.store.project_stats(project.id).unwrap();
+    assert_eq!(stats.rooms, 1);
+    assert_eq!(stats.threads, 1);
+    assert_eq!(stats.messages, 1);
+    assert_eq!(stats.agents, 2);
+
+    h.store.delete_project(project.id).unwrap();
+    assert!(h.store.list_projects().unwrap().is_empty());
+    assert!(h.store.list_rooms().unwrap().is_empty(), "rooms cascade");
+    assert!(
+        h.store.thread_detail(t1).is_err(),
+        "threads cascade with the project"
+    );
+    assert!(
+        h.store.list_agents(None).unwrap().is_empty(),
+        "agents cascade, so their keys stop working"
+    );
+
+    let _ = std::fs::remove_dir_all(&moved);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rooms_are_isolated() {
     let h = boot("isolation").await;

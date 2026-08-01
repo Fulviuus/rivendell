@@ -135,7 +135,7 @@ impl Store {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id,name,folder_path,git_remote,created_at FROM projects ORDER BY name",
+            "SELECT id,name,folder_path,git_remote,color,created_at FROM projects ORDER BY name",
         )?;
         let out = stmt
             .query_map([], |r| {
@@ -144,7 +144,8 @@ impl Store {
                     name: r.get(1)?,
                     folder_path: r.get(2)?,
                     git_remote: r.get(3)?,
-                    created_at: r.get(4)?,
+                    color: r.get(4)?,
+                    created_at: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -187,7 +188,81 @@ impl Store {
             name,
             folder_path: folder,
             git_remote: remote_of(&root),
+            color: String::new(),
             created_at: now(),
+        })
+    }
+
+    /// Rename, re-point at a different folder, or recolour.
+    ///
+    /// Moving the folder does not rewrite history: context pinned on existing
+    /// threads was snapshotted and stays as it was. It changes where agents
+    /// read from next.
+    pub fn update_project(&self, id: i64, patch: serde_json::Value) -> Result<()> {
+        if let Some(folder) = patch.get("folder_path").and_then(|v| v.as_str()) {
+            let root = crate::fsjail::canonical_root(folder)?;
+            if !root.is_dir() {
+                return Err(Error::Invalid(format!("{folder} is not a directory")));
+            }
+            let conn = self.lock();
+            conn.execute(
+                "UPDATE projects SET folder_path=?1, git_remote=?2 WHERE id=?3",
+                params![root.to_string_lossy(), git::remote(&root), id],
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::SqliteFailure(f, _) if f.extended_code == 2067 => {
+                    Error::Invalid("another project already uses that folder".into())
+                }
+                other => Error::from(other),
+            })?;
+        }
+        {
+            let conn = self.lock();
+            for key in ["name", "color"] {
+                let Some(v) = patch.get(key).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let v = v.trim();
+                if key == "name" && v.is_empty() {
+                    return Err(Error::Invalid("a project needs a name".into()));
+                }
+                conn.execute(
+                    &format!("UPDATE projects SET {key}=?1 WHERE id=?2"),
+                    params![v, id],
+                )?;
+            }
+        }
+        let conn = self.lock();
+        let notice = Self::append_event(&conn, None, None, "project.updated", None, patch)?;
+        drop(conn);
+        self.publish(notice);
+        Ok(())
+    }
+
+    pub fn project_stats(&self, id: i64) -> Result<ProjectStats> {
+        let conn = self.lock();
+        let one = |sql: &str| -> Result<i64> {
+            Ok(conn.query_row(sql, params![id], |r| r.get(0))?)
+        };
+        Ok(ProjectStats {
+            rooms: one("SELECT COUNT(*) FROM rooms WHERE project_id=?1")?,
+            threads: one(
+                "SELECT COUNT(*) FROM threads t JOIN rooms r ON r.id=t.room_id
+                 WHERE r.project_id=?1",
+            )?,
+            messages: one(
+                "SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
+                 JOIN rooms r ON r.id=t.room_id WHERE r.project_id=?1",
+            )?,
+            agents: one(
+                "SELECT COUNT(*) FROM agents a JOIN rooms r ON r.id=a.room_id
+                 WHERE r.project_id=?1",
+            )?,
+            // These live in the repo and survive the delete — worth saying so.
+            exported_records: one(
+                "SELECT COUNT(*) FROM threads t JOIN rooms r ON r.id=t.room_id
+                 WHERE r.project_id=?1 AND t.export_path IS NOT NULL",
+            )?,
         })
     }
 

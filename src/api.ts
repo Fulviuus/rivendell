@@ -19,6 +19,16 @@ export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
   createProject: (name: string, folder: string) =>
     invoke<Project>("create_project", { name, folder }),
+  updateProject: (id: number, patch: Record<string, unknown>) =>
+    invoke<void>("update_project", { id, patch }),
+  projectStats: (id: number) =>
+    invoke<{
+      rooms: number;
+      threads: number;
+      messages: number;
+      agents: number;
+      exported_records: number;
+    }>("project_stats", { id }),
   deleteProject: (id: number) => invoke<void>("delete_project", { id }),
 
   listRooms: () => invoke<Room[]>("list_rooms"),

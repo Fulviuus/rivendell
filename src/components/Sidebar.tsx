@@ -4,12 +4,14 @@ import logoDark from "../assets/logo-dark.png";
 import logoLight from "../assets/logo.png";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
+import { Button, Field, Icon, Input, Modal, swatchFor, Textarea, type AgentColor } from "../ui";
+import { ProjectSettings } from "./ProjectSettings";
 import type { Project } from "../types";
 
-export function Sidebar({ onOpenAgents }: { onOpenAgents: () => void }) {
+export function Sidebar() {
   const { projects, rooms, roomId, selectRoom, refreshRooms, notify, serverUrl } = useStore();
   const [newRoomFor, setNewRoomFor] = useState<Project | null>(null);
+  const [settingsFor, setSettingsFor] = useState<Project | null>(null);
   const [busy, setBusy] = useState(false);
 
   const grouped = useMemo(
@@ -60,7 +62,13 @@ export function Sidebar({ onOpenAgents }: { onOpenAgents: () => void }) {
         {grouped.map(({ project, rooms: rs }) => (
           <div key={project.id} className="mb-3">
             <div className="group flex items-center gap-1 px-2 py-1">
-              <Icon name="folder" size={13} className="text-faint" />
+              {project.color ? (
+                <span
+                  className={`h-2.5 w-2.5 shrink-0 rounded ${swatchFor(project.color as AgentColor)}`}
+                />
+              ) : (
+                <Icon name="folder" size={13} className="text-faint" />
+              )}
               <span
                 className="flex-1 truncate text-[11.5px] font-semibold tracking-wide text-muted uppercase"
                 title={project.folder_path}
@@ -73,6 +81,13 @@ export function Sidebar({ onOpenAgents }: { onOpenAgents: () => void }) {
                 className="rounded p-0.5 text-muted opacity-0 transition group-hover:opacity-100 hover:bg-hover hover:text-strong"
               >
                 <Icon name="plus" size={13} />
+              </button>
+              <button
+                onClick={() => setSettingsFor(project)}
+                title="Project settings, agents and keys"
+                className="rounded p-0.5 text-muted opacity-0 transition group-hover:opacity-100 hover:bg-hover hover:text-strong"
+              >
+                <Icon name="gear" size={13} />
               </button>
             </div>
 
@@ -112,10 +127,6 @@ export function Sidebar({ onOpenAgents }: { onOpenAgents: () => void }) {
       </div>
 
       <div className="space-y-1 border-t border-line p-2">
-        <Button variant="subtle" size="sm" className="w-full !justify-start" onClick={onOpenAgents}>
-          <Icon name="robot" size={14} />
-          Agents & keys
-        </Button>
         <Button
           variant="subtle"
           size="sm"
@@ -136,6 +147,13 @@ export function Sidebar({ onOpenAgents }: { onOpenAgents: () => void }) {
           <span className="truncate">{serverUrl ? serverUrl.replace(/^http:\/\//, "") : "starting…"}</span>
         </div>
       </div>
+
+      {settingsFor && (
+        <ProjectSettings
+          project={settingsFor}
+          onClose={() => setSettingsFor(null)}
+        />
+      )}
 
       {newRoomFor && (
         <NewRoomModal

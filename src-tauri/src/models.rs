@@ -8,7 +8,19 @@ pub struct Project {
     pub name: String,
     pub folder_path: String,
     pub git_remote: Option<String>,
+    pub color: String,
     pub created_at: String,
+}
+
+/// What deleting a project would destroy. Shown before the confirmation, so
+/// the number is a fact rather than a guess.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectStats {
+    pub rooms: i64,
+    pub threads: i64,
+    pub messages: i64,
+    pub agents: i64,
+    pub exported_records: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
