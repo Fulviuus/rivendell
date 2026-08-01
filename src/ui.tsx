@@ -344,7 +344,7 @@ const STATUS_TONE: Record<ThreadStatus, string> = {
 const STATUS_LABEL: Record<ThreadStatus, string> = {
   OPEN: "Open",
   AWAITING_REPLIES: "Awaiting replies",
-  NEEDS_CODER: "Needs you",
+  NEEDS_CODER: "Replied",
   RESOLVED: "Resolved",
   BLOCKED: "Blocked",
   WONTFIX: "Won't fix",
@@ -360,8 +360,19 @@ export function StatusChip({ status }: { status: ThreadStatus }) {
   );
 }
 
+/**
+ * REFUTED was renamed to CLEARED — "refuted" names a move in an argument, not
+ * the conclusion a reviewer reached. Both are still styled and both still read
+ * as CLEARED, because messages written before the rename keep the old value.
+ */
+export function verdictLabel(verdict: string): string {
+  return (verdict === "REFUTED" ? "CLEARED" : verdict).replace(/_/g, " ");
+}
+
 const VERDICT_TONE: Record<string, string> = {
   CONFIRMED: "bg-rose-100 text-rose-800 ring-rose-300/60 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30",
+  CLEARED:
+    "bg-emerald-100 text-emerald-800 ring-emerald-300/60 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30",
   REFUTED:
     "bg-emerald-100 text-emerald-800 ring-emerald-300/60 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30",
   UNCERTAIN:
@@ -386,7 +397,7 @@ export function VerdictChip({ verdict, severity }: { verdict: string; severity?:
           VERDICT_TONE[verdict] ?? "bg-chip text-body ring-line"
         }`}
       >
-        {verdict.replace(/_/g, " ")}
+        {verdictLabel(verdict)}
       </span>
       {severity && (
         <span className="text-[10.5px] font-semibold tracking-wide text-muted">{severity}</span>

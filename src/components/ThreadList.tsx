@@ -108,6 +108,7 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
                   />
 
                   <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-[10.5px] text-faint">#{t.id}</span>
                     {tag && <TagChip color={tag.color} label={tag.label} />}
                     <span
                       className="ml-auto shrink-0 text-[11px] text-faint"

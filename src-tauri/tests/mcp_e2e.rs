@@ -230,7 +230,7 @@ async fn full_thread_lifecycle() {
     assert!(!is_err, "{text}");
     assert!(text.contains("Token refresh races"));
     assert!(text.contains("no lock here"), "pinned file excerpt missing");
-    assert!(text.contains("REFUTE"), "tag instruction should be surfaced");
+    assert!(text.contains("CLEARED"), "tag instruction should be surfaced");
 
     // --- verdict is enforced ----------------------------------------------
     let (is_err, text) = call(
@@ -685,7 +685,11 @@ async fn an_edit_is_announced_and_can_be_answered() {
 
     let d = h.store.thread_detail(thread_id).unwrap();
     assert!(d.messages[0].edited_at.is_some(), "edit must be marked");
-    assert_eq!(d.messages[0].verdict.as_deref(), Some("REFUTED"));
+    assert_eq!(
+        d.messages[0].verdict.as_deref(),
+        Some("CLEARED"),
+        "an edit normalises the old name too"
+    );
     assert_eq!(d.messages.len(), 1, "editing must not add a message");
 
     // The coder is told, and the old verdict is on the event so the change is
@@ -704,7 +708,7 @@ async fn an_edit_is_announced_and_can_be_answered() {
         .find(|e| e["kind"] == "message.edited")
         .expect("an edit must be announced");
     assert_eq!(edit["payload"]["previous_verdict"], "CONFIRMED");
-    assert_eq!(edit["payload"]["verdict"], "REFUTED");
+    assert_eq!(edit["payload"]["verdict"], "CLEARED");
 
     // You may only rewrite your own words.
     let (is_err, text) = call(
@@ -1113,6 +1117,91 @@ async fn one_agent_can_be_in_several_rooms() {
             .create_agent(project.id, "helper", "ASSISTANT", None, "", "")
             .is_err(),
         "two agents in a project cannot share a name"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// Closing and resolving are different acts. Only a decision writes a record,
+/// and resolving cannot be reached by the route that skips the summary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_is_not_resolving() {
+    let h = boot("closing").await;
+    let (_room, coder_key, first, _second) = seed_room(&h).await;
+
+    let closed = open_thread(&h, &coder_key, "Never mind");
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "set_thread_status",
+        json!({"thread_id": closed, "status": "WONTFIX"}),
+    );
+    assert!(!is_err, "{text}");
+    let d = h.store.thread_detail(closed).unwrap();
+    assert_eq!(d.summary.status, "WONTFIX");
+    assert!(
+        d.export_path.is_none(),
+        "closing writes no decision record — there was no decision"
+    );
+
+    // Reopening puts it back in front of the assistants.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "set_thread_status",
+        json!({"thread_id": closed, "status": "AWAITING_REPLIES"}),
+    );
+    assert!(!is_err, "{text}");
+    let (is_err, text) = call(
+        &h.url,
+        &first,
+        "reply",
+        json!({"thread_id": closed, "body": "back on it", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "a reopened thread must accept replies again: {text}");
+
+    // Resolving cannot be reached without a summary.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "set_thread_status",
+        json!({"thread_id": closed, "status": "RESOLVED"}),
+    );
+    assert!(is_err, "status must not be a back door around the record: {text}");
+    assert!(text.contains("resolve_thread"), "and should say what to use: {text}");
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// The old verdict name still works, so an agent mid-reply is not broken by a
+/// rename it never saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_renamed_verdict_still_accepts_the_old_word() {
+    let h = boot("verdict").await;
+    let (_room, coder_key, first, _second) = seed_room(&h).await;
+
+    let (_, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Break this", "body": "…", "tag": "ADVERSARIAL_REVIEW"}),
+    );
+    let id: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .unwrap();
+
+    let (is_err, text) = call(
+        &h.url,
+        &first,
+        "reply",
+        json!({"thread_id": id, "body": "could not break it", "verdict": "REFUTED"}),
+    );
+    assert!(!is_err, "the old word must still be accepted: {text}");
+    assert_eq!(
+        h.store.thread_detail(id).unwrap().messages[0].verdict.as_deref(),
+        Some("CLEARED"),
+        "and is stored under the new name"
     );
 
     let _ = std::fs::remove_dir_all(&h.dir);

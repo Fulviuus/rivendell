@@ -833,9 +833,9 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
             "ADVERSARIAL_REVIEW",
             "Adversarial review",
             "rose",
-            "Your job is to REFUTE this change, not to praise it. Hunt for the input that breaks it: boundary values, empty and huge collections, concurrency, partial failure, error paths that swallow, assumptions that hold only on the happy path. For each issue give a concrete failing scenario — inputs and the resulting wrong behaviour. If after a genuine attempt you cannot break it, reply REFUTED with what you tried. Default to UNCERTAIN over inventing a plausible-sounding bug.",
+            "Your job is to break this change, not to praise it. Hunt for the input that breaks it: boundary values, empty and huge collections, concurrency, partial failure, error paths that swallow, assumptions that hold only on the happy path. For each issue give a concrete failing scenario — inputs and the resulting wrong behaviour. Reply CONFIRMED when you found a real problem, and CLEARED when you genuinely tried and it held up — say what you tried. Default to UNCERTAIN over inventing a plausible-sounding bug.",
             1,
-            r#"["CONFIRMED","REFUTED","UNCERTAIN"]"#,
+            r#"["CONFIRMED","CLEARED","UNCERTAIN"]"#,
             2,
             20,
         ),
@@ -855,7 +855,7 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
             "amber",
             "Look for exploitable problems, not lint. Injection, authz gaps, path traversal, secret handling, unsafe deserialization, TOCTOU, resource exhaustion. For each finding give the attack path concretely. Rate severity honestly — inflating severity is worse than missing a low.",
             1,
-            r#"["CONFIRMED","REFUTED","UNCERTAIN"]"#,
+            r#"["CONFIRMED","CLEARED","UNCERTAIN"]"#,
             2,
             40,
         ),
@@ -885,7 +885,7 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
             "orange",
             "Find where the time or memory actually goes. Prefer measurement over intuition; if you are reasoning without data, say so. Give the expected magnitude of any improvement you propose.",
             1,
-            r#"["CONFIRMED","REFUTED","UNCERTAIN"]"#,
+            r#"["CONFIRMED","CLEARED","UNCERTAIN"]"#,
             1,
             70,
         ),
@@ -906,7 +906,8 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
             "INSERT INTO tags(key,label,color,instruction,requires_verdict,verdict_options,default_quorum,sort,builtin)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1)
              ON CONFLICT(key) DO UPDATE SET
-               label=excluded.label, color=excluded.color, sort=excluded.sort
+               label=excluded.label, color=excluded.color, sort=excluded.sort,
+               instruction=excluded.instruction, verdict_options=excluded.verdict_options
              WHERE tags.builtin=1",
             rusqlite::params![key, label, color, instruction, rv, opts, expects_replies, sort],
         )?;

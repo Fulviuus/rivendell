@@ -18,10 +18,11 @@ import {
   VerdictChip,
   agentTone,
 } from "../ui";
-import type { Agent, Message, ThreadContextItem, ThreadDetail } from "../types";
+import type { Agent, Message, ThreadContextItem, ThreadDetail, ThreadStatus } from "../types";
 
 export function ThreadView() {
-  const { thread, tags, agents, rooms, roomId, notify, refreshThread } = useStore();
+  const { thread, tags, agents, rooms, roomId, notify, refreshThread, refreshThreads } =
+    useStore();
   const room = rooms.find((r) => r.id === roomId);
   const [composing, setComposing] = useState("");
   const [resolving, setResolving] = useState(false);
@@ -55,6 +56,20 @@ export function ThreadView() {
   const unknownMentions = thread.mentions.length - asked.length;
   const done = thread.status === "RESOLVED" || thread.status === "WONTFIX";
 
+  async function setStatus(status: ThreadStatus) {
+    if (!thread) return;
+    setBusy(true);
+    try {
+      await api.setThreadStatus(thread.id, status);
+      await refreshThread();
+      await refreshThreads();
+    } catch (e) {
+      notify("error", errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function post() {
     if (!composing.trim() || !thread) return;
     setBusy(true);
@@ -81,7 +96,13 @@ export function ThreadView() {
                 opened by {thread.author_name} · {ago(thread.created_at)}
               </span>
             </div>
-            <h1 className="mt-1.5 text-[15px] leading-snug font-semibold text-strong">
+            <h1 className="mt-1.5 flex items-baseline gap-2 text-[15px] leading-snug font-semibold text-strong">
+              <span
+                className="shrink-0 font-mono text-[12px] font-normal text-faint select-all"
+                title="Thread id — quote this to an agent"
+              >
+                #{thread.id}
+              </span>
               {thread.title}
             </h1>
             {/* Who the thread is addressed to. It drives the quorum, so a
@@ -130,13 +151,32 @@ export function ThreadView() {
           </div>
 
           <div className="flex shrink-0 gap-1.5">
-            {!done && (
+            {!done ? (
               <>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  title="Close without a decision record — nothing is written to the repo"
+                  onClick={() => setStatus("WONTFIX")}
+                >
+                  <Icon name="x" size={12} />
+                  Close
+                </Button>
                 <Button size="sm" variant="primary" onClick={() => setResolving(true)}>
                   <Icon name="check" size={13} />
                   Resolve
                 </Button>
               </>
+            ) : (
+              <Button
+                size="sm"
+                disabled={busy}
+                title="Put it back in front of the assistants"
+                onClick={() => setStatus("AWAITING_REPLIES")}
+              >
+                <Icon name="play" size={12} />
+                Reopen
+              </Button>
             )}
             {thread.export_path && (
               <Button
@@ -209,18 +249,34 @@ export function ThreadView() {
 
         <WorkingOn thread={thread} timeoutSecs={room?.response_timeout_secs ?? 300} />
 
+        {/* A reopened thread keeps the summary it was closed with. Left in its
+            resolved styling it reads as still settled, so it is greyed and
+            labelled as history once the thread is live again. */}
         {thread.resolution_summary && (
-          <div className="mt-5 rounded-xl border-l-2 border-l-emerald-400 bg-emerald-50 p-3.5 ring-1 ring-emerald-200 dark:border-l-emerald-500 dark:bg-emerald-500/8 dark:ring-emerald-500/20">
-            <div className="mb-1.5 flex items-center gap-1.5 text-[11.5px] font-semibold tracking-wide text-emerald-700 uppercase dark:text-emerald-300">
-              <Icon name="check" size={12} />
-              Resolution
+          <div
+            className={`mt-5 rounded-xl border-l-2 p-3.5 ring-1 ${
+              done
+                ? "border-l-emerald-400 bg-emerald-50 ring-emerald-200 dark:border-l-emerald-500 dark:bg-emerald-500/8 dark:ring-emerald-500/20"
+                : "border-l-line bg-chip/40 opacity-70 ring-line"
+            }`}
+          >
+            <div
+              className={`mb-1.5 flex items-center gap-1.5 text-[11.5px] font-semibold tracking-wide uppercase ${
+                done ? "text-emerald-700 dark:text-emerald-300" : "text-muted"
+              }`}
+            >
+              <Icon name={done ? "check" : "chevron"} size={12} />
+              {done ? "Resolution" : "Earlier resolution — superseded when this was reopened"}
             </div>
             <div
               className="prose-msg"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(thread.resolution_summary, mentionable) }}
             />
             {thread.export_path && (
-              <p className="mt-2 font-mono text-[11px] text-muted">{thread.export_path}</p>
+              <p className="mt-2 font-mono text-[11px] text-muted">
+                {thread.export_path}
+                {!done && " — written at the time; rewritten if you resolve again"}
+              </p>
             )}
           </div>
         )}

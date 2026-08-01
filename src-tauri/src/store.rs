@@ -1171,6 +1171,12 @@ impl Store {
         if !actor.is_coder() {
             return Err(Error::Forbidden("only a CODER may change thread status".into()));
         }
+        if status == "RESOLVED" {
+            return Err(Error::Invalid(
+                "use resolve_thread — resolving writes the decision record, and needs a summary"
+                    .into(),
+            ));
+        }
         let conn = self.lock();
         let room_id: i64 = conn.query_row(
             "SELECT room_id FROM threads WHERE id=?1",
@@ -1229,7 +1235,7 @@ impl Store {
         }
 
         let detail = self.thread_detail(thread_id)?;
-        let export_path = if status == "RESOLVED" || status == "WONTFIX" {
+        let export_path = if status == "RESOLVED" {
             let conn = self.lock();
             let folder = Self::room_folder(&conn, detail.summary.room_id)?;
             drop(conn);
@@ -1618,6 +1624,9 @@ impl Store {
         match raw.map(str::trim) {
             Some(v) if !v.is_empty() => {
                 let v = v.to_ascii_uppercase();
+                // REFUTED was renamed to CLEARED. Still accepted, so a
+                // connected agent working from the old wording keeps working.
+                let v = if v == "REFUTED" { "CLEARED".to_string() } else { v };
                 if !tag.verdict_options.is_empty() && !tag.verdict_options.contains(&v) {
                     return Err(Error::Invalid(format!(
                         "verdict for a {} thread must be one of {}",

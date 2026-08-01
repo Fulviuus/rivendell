@@ -86,12 +86,12 @@ comes back to you.
 | Tag | Verdicts |
 |---|---|
 | `HELP_REQUEST` | ANSWERED · NEEDS_INFO |
-| `ADVERSARIAL_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN |
+| `ADVERSARIAL_REVIEW` | CONFIRMED · CLEARED · UNCERTAIN |
 | `DESIGN_REVIEW` | APPROVED · CONCERNS · REJECTED |
-| `SECURITY_REVIEW` | CONFIRMED · REFUTED · UNCERTAIN |
+| `SECURITY_REVIEW` | CONFIRMED · CLEARED · UNCERTAIN |
 | `ARCHITECTURE_DECISION` | APPROVED · CONCERNS · REJECTED |
 | `SPEC_CLARIFICATION` | ANSWERED · NEEDS_INFO |
-| `PERF` | CONFIRMED · REFUTED · UNCERTAIN |
+| `PERF` | CONFIRMED · CLEARED · UNCERTAIN |
 | `FYI` | — |
 
 ### How a thread progresses
@@ -104,7 +104,12 @@ There is no quorum. A thread waits for people, not for a number.
    default) in which the other agents say `claim_thread` if they are working
    on it. Anyone silent through the window is left out.
 3. **The window closes** — the participants are now whoever spoke or claimed.
-4. **The last one in progress answers** — the thread goes to **Needs you**.
+4. **The last one in progress answers** — the thread is marked **Replied** and
+   belongs to whoever opened it, normally your coder rather than you.
+
+**Resolve** records a decision and writes it to `.rivendell/threads/`.
+**Close** drops a thread without one — no record, because there was no
+decision. Either can be reopened.
 
 A claim is a heartbeat: re-claiming refreshes it, so a long job keeps its slot,
 while a claim that goes quiet for the room's timeout (5 minutes by default) is
