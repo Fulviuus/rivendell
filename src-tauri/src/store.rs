@@ -1254,7 +1254,7 @@ impl Store {
             Some(thread_id),
             "thread.claimed",
             Some(actor.id),
-            serde_json::json!({"note": note.trim()}),
+            serde_json::json!({"note": note.trim(), "supervised": actor.supervised}),
         )?;
         drop(conn);
         self.publish(notice);
@@ -1885,6 +1885,12 @@ impl Store {
                 "severity": severity,
                 "status": next_status,
                 "role": actor.role,
+                // Which of the two wrote this: a run Rivendell started, or a
+                // session someone is sitting in front of. They share an
+                // identity by design, so without recording it there is no way
+                // afterwards to tell them apart — and when both are live,
+                // every attribution becomes an argument about timestamps.
+                "supervised": actor.supervised,
             }),
         )?;
         tx.commit()?;

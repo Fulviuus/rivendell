@@ -1245,6 +1245,71 @@ async fn rooms_are_isolated() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// A message says which kind of session wrote it.
+///
+/// A watcher-started run and a session you are sitting in front of hold the
+/// same identity by design. Without recording which was which, two live at
+/// once makes every attribution an argument about timestamps — and I lost one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reply_records_whether_rivendell_started_it() {
+    let h = boot("attribution").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (scout, own_key) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "who answered", "body": "?", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "{text}");
+    let tid: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .expect("thread id in response");
+
+    // A session the user runs themselves.
+    let (is_err, text) = call(
+        &h.url,
+        &own_key,
+        "reply",
+        json!({"thread_id": tid, "body": "from my own terminal", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "{text}");
+
+    // A run Rivendell started, with the credential it mints for one.
+    let (token, handle) = h.store.mint_live_token(scout).unwrap();
+    let (is_err, text) = call(
+        &h.url,
+        &token,
+        "reply",
+        json!({"thread_id": tid, "body": "started by the watcher", "verdict": "ANSWERED"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let marks: Vec<bool> = h
+        .store
+        .events_since(0, None, 500)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "message.created" && e.actor_agent_id == Some(scout))
+        .map(|e| e.payload["supervised"].as_bool().unwrap_or(false))
+        .collect();
+    assert_eq!(
+        marks,
+        vec![false, true],
+        "the log must say which session wrote each reply"
+    );
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// A thread opened before the watcher existed still gets answered.
 ///
 /// This is the failure that looks exactly like a broken feature from outside:
