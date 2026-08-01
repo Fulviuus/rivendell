@@ -89,12 +89,33 @@ stop_dev() {
   die "port ${VITE_PORT} did not free up"
 }
 
+APP_DATA="$HOME/Library/Application Support/dev.fulvio.rivendell"
+
+# Agents the app started run in their own process groups so one signal reaches
+# the whole tree. That teardown happens on an orderly quit — but this script
+# kills the app outright, which skips it, and macOS then reparents the children
+# and lets them keep running. And keep billing. The app writes down what it
+# started; this reads that back.
+stop_awake_agents() {
+  local ledger="${APP_DATA}/running.json"
+  [ -f "$ledger" ] || return 0
+  local pgids
+  pgids="$(sed -n 's/.*"pgid":[[:space:]]*\([0-9]*\).*/\1/p' "$ledger" | sort -u)"
+  for pgid in $pgids; do
+    kill -0 "-${pgid}" 2>/dev/null || continue
+    info "stopping an agent the app started (process group ${pgid})"
+    kill -TERM "-${pgid}" 2>/dev/null || true
+  done
+  rm -f "$ledger"
+}
+
 # `open` on an already-running app just brings it to the front — it will NOT
 # pick up a new build. Quitting first is the whole reason this exists.
 #
 # Both directions are cleared every time: a bundled app and a dev run collide
 # on the same MCP port, so leaving either behind breaks the other.
 stop_running() {
+  stop_awake_agents
   if pgrep -f "$RUNNING_PATTERN" >/dev/null 2>&1; then
     info "stopping the running instance"
     pkill -f "$RUNNING_PATTERN" || true

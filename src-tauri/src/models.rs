@@ -72,6 +72,8 @@ pub struct Agent {
     pub system_note: String,
     pub created_at: String,
     pub revoked_at: Option<String>,
+    /// Rivendell starts this agent itself when its rooms have work for it.
+    pub awake: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +189,9 @@ pub struct EventNotice {
     pub room_id: Option<i64>,
     pub thread_id: Option<i64>,
     pub kind: String,
+    /// Who caused it. The supervisor needs this to avoid waking the agent that
+    /// just acted — without it, one reply would wake its own author for ever.
+    pub actor_agent_id: Option<i64>,
 }
 
 // ---------------------------------------------------------------- inputs ---

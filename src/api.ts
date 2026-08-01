@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Agent,
   AgentProfile,
+  AwakeStatus,
   ContextInput,
   EventNotice,
   NewAgentKey,
@@ -30,6 +31,10 @@ export const api = {
       exported_records: number;
     }>("project_stats", { id }),
   deleteProject: (id: number) => invoke<void>("delete_project", { id }),
+
+  setAgentAwake: (agentId: number, awake: boolean) =>
+    invoke<void>("set_agent_awake", { agentId, awake }),
+  awakeStatus: () => invoke<AwakeStatus[]>("awake_status"),
 
   listRooms: () => invoke<Room[]>("list_rooms"),
   createRoom: (projectId: number, name: string, purpose: string) =>

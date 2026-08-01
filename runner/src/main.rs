@@ -12,7 +12,7 @@
 //! While the room is quiet it costs nothing at all.
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8787/mcp";
 
@@ -23,6 +23,8 @@ struct Config {
     wait: u64,
     /// Pause after a run, so a burst of replies is one wake-up not five.
     settle: u64,
+    /// A run still going after this is stuck, not thinking.
+    limit: u64,
     once: bool,
     cmd: Vec<String>,
 }
@@ -167,22 +169,52 @@ fn run(cfg: &Config, threads: &[i64], list: &str) {
         })
         .collect();
 
-    match Command::new(&cfg.cmd[0])
+    let mut child = match Command::new(&cfg.cmd[0])
         .args(&args)
         .env("RIVENDELL_URL", &cfg.url)
         .env("RIVENDELL_KEY", &cfg.key)
         .env("RIVENDELL_THREADS", &ids)
-        .status()
+        .spawn()
     {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!("rivendell-run: agent exited with {s}"),
+        Ok(c) => c,
         Err(e) => {
             eprintln!("rivendell-run: could not run `{}`: {e}", cfg.cmd[0]);
             if e.kind() == std::io::ErrorKind::NotFound {
                 eprintln!("  It is not on PATH.");
                 std::process::exit(1);
             }
+            return;
         }
+    };
+
+    // Without a wall clock, one wedged run stops the watch for good — the agent
+    // goes quiet and nothing says why. Waiting forever is the failure this
+    // whole program exists to prevent.
+    let deadline = Instant::now() + Duration::from_secs(cfg.limit);
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) => {
+                if !s.success() {
+                    eprintln!("rivendell-run: agent exited with {s}");
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("rivendell-run: lost track of the agent: {e}");
+                return;
+            }
+        }
+        if Instant::now() >= deadline {
+            eprintln!(
+                "rivendell-run: still going after {}m — stopping it",
+                cfg.limit / 60
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -241,6 +273,7 @@ fn parse_args() -> Result<Config, String> {
         key: std::env::var("RIVENDELL_KEY").unwrap_or_default(),
         wait: 900,
         settle: 2,
+        limit: 20 * 60,
         once: false,
         cmd,
     };
@@ -268,6 +301,10 @@ fn parse_args() -> Result<Config, String> {
             }
             "--settle" => {
                 cfg.settle = need(i)?.parse().map_err(|_| "--settle wants seconds")?;
+                i += 2;
+            }
+            "--limit" => {
+                cfg.limit = need(i)?.parse().map_err(|_| "--limit wants seconds")?;
                 i += 2;
             }
             "--once" => {
@@ -299,6 +336,7 @@ Wakes an agent when a Rivendell room needs it.
   --url URL       default {DEFAULT_URL} (or RIVENDELL_URL)
   --wait SECS     how long each poll blocks; default 900
   --settle SECS   pause after a run, so a burst is one wake-up; default 2
+  --limit SECS    kill a run that has not finished; default 1200
   --once          handle one wake-up and exit — useful for trying it out
 
 The command runs once per wake-up. In its arguments, {{prompt}} becomes an

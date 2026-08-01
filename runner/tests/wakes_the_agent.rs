@@ -84,6 +84,27 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8(body).unwrap()
 }
 
+/// Without a wall clock one wedged run stops the watch for good, which is the
+/// exact failure this program exists to prevent.
+#[test]
+fn a_run_that_never_finishes_is_stopped() {
+    let (url, server) = fake_rivendell();
+    let started = std::time::Instant::now();
+
+    let status = Command::new(env!("CARGO_BIN_EXE_rivendell-run"))
+        .args(["--key", "rvd_test", "--url", &url, "--wait", "5", "--limit", "1", "--once", "--"])
+        .args(["sleep", "120"])
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "it waited for the whole sleep instead of enforcing --limit"
+    );
+    server.join().unwrap();
+}
+
 #[test]
 fn runs_the_command_once_with_the_threads_that_need_it() {
     let (url, server) = fake_rivendell();

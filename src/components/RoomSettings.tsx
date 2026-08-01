@@ -187,6 +187,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             onAdd={() => setAdding(true)}
             onEdit={setEditing}
             onRotate={setRotating}
+            onChanged={refreshAgents}
             onRemove={async (a) => {
               try {
                 await api.leaveRoom(room.id, a.id);
@@ -215,35 +216,6 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
                       }
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-card px-2 py-1 text-[12.5px] text-body shadow-card ring-1 ring-line transition hover:ring-accent/40"
-                  >
-                    <Avatar name={a.name} icon={a.icon} color={a.color} size={16} />
-                    {a.name}
-                    <Icon name="plus" size={11} className="text-faint" />
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-          {notHere.length > 0 && (
-            <div className="mt-2 rounded-xl bg-code p-2.5 ring-1 ring-line">
-              <p className="mb-1.5 text-[11.5px] text-muted">
-                Already in this project — click to add to #{room.name}:
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {notHere.map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={async () => {
-                      try {
-                        await api.joinRoom(room.id, a.id);
-                        await refreshAgents();
-                      } catch (e) {
-                        notify("error", errText(e));
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-card px-2 py-1 text-[12.5px] text-base shadow-card ring-1 ring-line transition hover:ring-accent/40"
                   >
                     <Avatar name={a.name} icon={a.icon} color={a.color} size={16} />
                     {a.name}
@@ -316,6 +288,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             Save
           </Button>
         </div>
+      </div>
     </Modal>
   );
 }

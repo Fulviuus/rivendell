@@ -13,6 +13,38 @@ use tokio::sync::broadcast;
 pub struct Store {
     conn: Mutex<Connection>,
     pub events: broadcast::Sender<EventNotice>,
+    /// Credentials for processes Rivendell started itself, keyed by digest.
+    ///
+    /// Only `sha256(key)` is ever persisted, so the app genuinely cannot read
+    /// an agent's own key back out to hand to a child. It mints one of these
+    /// instead: same identity, in memory only, gone when the run ends and
+    /// certainly gone when the app quits. That is exactly the lifetime a
+    /// spawned process should have.
+    live_tokens: Mutex<std::collections::HashMap<String, LiveToken>>,
+}
+
+/// An `agents.id` is a bare rowid: not AUTOINCREMENT, and `delete_agent` really
+/// deletes. Delete the newest agent and create another and the new one inherits
+/// the id — so a token that remembered only the id would come back to life as
+/// somebody else, in a different project, possibly with a different role and a
+/// different jail root. Pinning `created_at` too makes the identity one that a
+/// recreate cannot accidentally forge.
+struct LiveToken {
+    agent_id: i64,
+    created_at: String,
+    minted: std::time::Instant,
+}
+
+/// Nothing Rivendell starts should still be talking after this. Belt to the
+/// braces of dropping the token when the process ends: if a supervisor bug
+/// leaks one, it stops working on its own rather than lasting until quit.
+const LIVE_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+/// How to start an agent's CLI, read off its launch profile.
+pub struct LaunchPlan {
+    pub cmd: String,
+    pub args: Vec<String>,
+    pub mcp_install_mode: String,
 }
 
 /// Identity resolved from a bearer token, plus everything a tool call needs.
@@ -24,6 +56,10 @@ pub struct AgentCtx {
     pub project_id: i64,
     pub project_name: String,
     pub folder_path: String,
+    /// True when Rivendell started this process itself. Such a run was started
+    /// to do a named job and should finish it and exit — advice that is the
+    /// exact opposite of what a resident session wants to hear.
+    pub supervised: bool,
 }
 
 impl AgentCtx {
@@ -50,7 +86,69 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             events,
+            live_tokens: Mutex::new(std::collections::HashMap::new()),
         })
+    }
+
+    // ------------------------------------------------------- live tokens ---
+
+    /// A credential for one spawned run. The caller must hold the returned
+    /// handle and `drop_live_token` it when the process ends.
+    ///
+    /// The `rvdlive_` prefix is deliberately not `rvd_`, so `key_id_of` refuses
+    /// it and one of these can never be mistaken for a real key — including by
+    /// the database lookup, which would otherwise find nothing and say so in a
+    /// confusing way.
+    pub fn mint_live_token(&self, agent_id: i64) -> Result<(String, String)> {
+        let created_at: String = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT created_at FROM agents WHERE id=?1",
+                params![agent_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("agent {agent_id}")))?
+        };
+        let token = format!("rvdlive_{}", &auth::generate().full[4..]);
+        let handle = auth::hash(&token);
+        self.live_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                handle.clone(),
+                LiveToken { agent_id, created_at, minted: std::time::Instant::now() },
+            );
+        Ok((token, handle))
+    }
+
+    pub fn drop_live_token(&self, handle: &str) {
+        self.live_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(handle);
+    }
+
+    /// Every live token for one agent, for when it is revoked or deleted and
+    /// whatever is running as it must stop being able to speak.
+    pub fn drop_live_tokens_for(&self, agent_id: i64) {
+        self.live_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, t| t.agent_id != agent_id);
+    }
+
+    /// `(agent_id, created_at)` for a presented token, or `None` if it is not
+    /// one of ours or has aged out.
+    fn live_identity(&self, token: &str) -> Option<(i64, String)> {
+        let mut map = self.live_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = auth::hash(token);
+        let t = map.get(&handle)?;
+        if t.minted.elapsed() > LIVE_TOKEN_TTL {
+            map.remove(&handle);
+            return None;
+        }
+        Some((t.agent_id, t.created_at.clone()))
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -80,6 +178,7 @@ impl Store {
             room_id,
             thread_id,
             kind: kind.to_string(),
+            actor_agent_id: actor,
         })
     }
 
@@ -492,7 +591,7 @@ impl Store {
         let mut sql = String::from(
             "SELECT a.id,a.project_id,a.name,a.role,a.profile_id,p.key,p.label,
                     COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
-                    a.color,a.key_preview,a.system_note,a.created_at,a.revoked_at
+                    a.color,a.key_preview,a.system_note,a.created_at,a.revoked_at,a.awake
              FROM agents a LEFT JOIN agent_profiles p ON p.id=a.profile_id",
         );
         let mut ps: Vec<rusqlite::types::Value> = vec![];
@@ -522,6 +621,7 @@ impl Store {
                     system_note: r.get(10)?,
                     created_at: r.get(11)?,
                     revoked_at: r.get(12)?,
+                    awake: r.get::<_, i64>(13)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -595,6 +695,10 @@ impl Store {
         if n == 0 {
             return Err(Error::NotFound(format!("agent {agent_id}")));
         }
+        drop(conn);
+        // Rotating is how you cut off a key you no longer trust. Anything
+        // already running on the old one must stop being that agent.
+        self.drop_live_tokens_for(agent_id);
         Ok(key.full)
     }
 
@@ -604,6 +708,10 @@ impl Store {
             "UPDATE agents SET revoked_at=?1 WHERE id=?2",
             params![if revoked { Some(now()) } else { None }, agent_id],
         )?;
+        drop(conn);
+        if revoked {
+            self.drop_live_tokens_for(agent_id);
+        }
         Ok(())
     }
 
@@ -660,13 +768,43 @@ impl Store {
     }
 
     pub fn delete_agent(&self, agent_id: i64) -> Result<()> {
-        let conn = self.lock();
-        conn.execute("DELETE FROM agents WHERE id=?1", params![agent_id])?;
+        {
+            let conn = self.lock();
+            conn.execute("DELETE FROM agents WHERE id=?1", params![agent_id])?;
+        }
+        // Before anything can reuse this rowid.
+        self.drop_live_tokens_for(agent_id);
         Ok(())
     }
 
     /// Bearer-token lookup. Returns `None` for unknown, malformed or revoked keys.
     pub fn authenticate(&self, token: &str) -> Result<Option<AgentCtx>> {
+        // A token the app minted for a process it started. Revocation still
+        // applies: revoking an agent has to cut off whatever is already running
+        // as it, not just refuse the next connection.
+        if let Some((agent_id, created_at)) = self.live_identity(token) {
+            let conn = self.lock();
+            return Ok(conn
+                .query_row(
+                    "SELECT a.id,a.name,a.role,p.id,p.name,p.folder_path
+                     FROM agents a JOIN projects p ON p.id=a.project_id
+                     WHERE a.id=?1 AND a.created_at=?2 AND a.revoked_at IS NULL",
+                    params![agent_id, created_at],
+                    |r| {
+                        Ok(AgentCtx {
+                            id: r.get(0)?,
+                            name: r.get(1)?,
+                            role: r.get(2)?,
+                            project_id: r.get(3)?,
+                            project_name: r.get(4)?,
+                            folder_path: r.get(5)?,
+                            supervised: true,
+                        })
+                    },
+                )
+                .optional()?);
+        }
+
         let Some(key_id) = auth::key_id_of(token) else {
             return Ok(None);
         };
@@ -699,7 +837,17 @@ impl Store {
             project_id,
             project_name,
             folder_path,
+            supervised: false,
         }))
+    }
+
+    /// Still allowed to speak? Checked inside the long poll, which can outlive
+    /// a revocation by up to an hour otherwise.
+    pub fn agent_is_live(&self, agent_id: i64) -> Result<bool> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT 1 FROM agents WHERE id=?1 AND revoked_at IS NULL")?;
+        Ok(stmt.exists(params![agent_id])?)
     }
 
     /// Rooms this agent has joined.
@@ -787,6 +935,109 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------------------- awake ---
+
+    /// Turn Rivendell's own supervision of this agent on or off.
+    pub fn set_agent_awake(&self, agent_id: i64, awake: bool) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE agents SET awake=?1 WHERE id=?2",
+            params![awake as i64, agent_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn awake_agent_ids(&self) -> Result<Vec<i64>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id FROM agents WHERE awake=1 AND revoked_at IS NULL")?;
+        let out = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// Awake agents in one room — the candidates an event in that room could wake.
+    pub fn awake_agents_in_room(&self, room_id: i64) -> Result<Vec<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT a.id FROM agents a
+             JOIN room_members m ON m.agent_id=a.id
+             WHERE m.room_id=?1 AND a.awake=1 AND a.revoked_at IS NULL AND a.role<>'HUMAN'",
+        )?;
+        let out = stmt
+            .query_map(params![room_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// Of `threads`, the ones this agent could still usefully act on.
+    ///
+    /// This is what keeps two awake agents from talking each other's budget
+    /// away. The reply caps already refuse the message, but without this the
+    /// agent still gets started, reads the room, discovers it may not speak and
+    /// exits — a full billable run to accomplish nothing. Checking first costs
+    /// one query.
+    pub fn wakeable_threads(&self, agent_id: i64, threads: &[i64]) -> Result<Vec<i64>> {
+        if threads.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.lock();
+        let holes = vec!["?"; threads.len()].join(",");
+        let sql = format!(
+            "SELECT t.id
+             FROM threads t
+             JOIN rooms r ON r.id=t.room_id
+             JOIN room_members m ON m.room_id=t.room_id AND m.agent_id=?1
+             WHERE t.id IN ({holes})
+               AND t.status NOT IN ('RESOLVED','WONTFIX')
+               AND r.paused=0
+               AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id AND agent_id=?1)
+                     < r.max_replies_per_agent
+               AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id)
+                     < r.max_thread_messages
+             ORDER BY t.id"
+        );
+        let mut ps: Vec<rusqlite::types::Value> = vec![agent_id.into()];
+        ps.extend(threads.iter().map(|t| rusqlite::types::Value::from(*t)));
+        let mut stmt = conn.prepare(&sql)?;
+        let out = stmt
+            .query_map(params_from_iter(ps), |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// How to start an agent, or why it cannot be started.
+    pub fn launch_plan(&self, agent_id: i64) -> Result<LaunchPlan> {
+        let conn = self.lock();
+        let row: Option<(String, String, String, String)> = conn
+            .query_row(
+                "SELECT a.name, COALESCE(p.key,''), COALESCE(p.launch_cmd,''),
+                        COALESCE(p.launch_args,'[]')
+                 FROM agents a LEFT JOIN agent_profiles p ON p.id=a.profile_id
+                 WHERE a.id=?1",
+                params![agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((name, key, cmd, args_json)) = row else {
+            return Err(Error::NotFound(format!("agent {agent_id}")));
+        };
+        if cmd.trim().is_empty() || key == "external" {
+            return Err(Error::Invalid(format!(
+                "Rivendell does not know how to start {name}. Give it a launch profile other \
+                 than External, or run it yourself."
+            )));
+        }
+        let args: Vec<String> = serde_json::from_str(&args_json)
+            .map_err(|e| Error::Invalid(format!("profile `{key}` has bad launch_args: {e}")))?;
+        let mode: String = conn.query_row(
+            "SELECT COALESCE(p.mcp_install_mode,'none') FROM agents a
+             LEFT JOIN agent_profiles p ON p.id=a.profile_id WHERE a.id=?1",
+            params![agent_id],
+            |r| r.get(0),
+        )?;
+        Ok(LaunchPlan { cmd, args, mcp_install_mode: mode })
+    }
+
     pub fn agent_ctx(&self, agent_id: i64) -> Result<AgentCtx> {
         let conn = self.lock();
         conn.query_row(
@@ -802,6 +1053,7 @@ impl Store {
                     project_id: r.get(3)?,
                     project_name: r.get(4)?,
                     folder_path: r.get(5)?,
+                    supervised: false,
                 })
             },
         )

@@ -11,6 +11,8 @@ use tauri::State;
 
 pub struct AppState {
     pub store: Arc<Store>,
+    /// Starts and stops the agents Rivendell runs itself.
+    pub awake: Arc<crate::awake::Supervisor>,
     /// Filled in once the MCP listener binds; shown in the UI and used to
     /// build the connection snippets.
     pub mcp_url: Arc<std::sync::RwLock<String>>,
@@ -172,6 +174,10 @@ pub fn update_agent(state: State<'_, AppState>, agent_id: i64, patch: Value) -> 
 
 #[tauri::command]
 pub fn set_agent_revoked(state: State<'_, AppState>, agent_id: i64, revoked: bool) -> Result<()> {
+    if revoked {
+        // Whatever is running as it stops now, not when it feels like it.
+        state.awake.set_awake(agent_id, false).ok();
+    }
     state.store.set_agent_revoked(agent_id, revoked)
 }
 
@@ -187,7 +193,23 @@ pub fn leave_room(state: State<'_, AppState>, room_id: i64, agent_id: i64) -> Re
 
 #[tauri::command]
 pub fn delete_agent(state: State<'_, AppState>, agent_id: i64) -> Result<()> {
+    state.awake.stop(agent_id);
     state.store.delete_agent(agent_id)
+}
+
+// ----------------------------------------------------------------- awake ---
+
+/// Have Rivendell start this agent when its rooms have work, or stop doing so.
+#[tauri::command]
+pub fn set_agent_awake(state: State<'_, AppState>, agent_id: i64, awake: bool) -> Result<()> {
+    state.awake.set_awake(agent_id, awake)
+}
+
+/// Live run state for every agent the supervisor knows about. The UI merges
+/// this with the `awake` flag it already has from `list_agents`.
+#[tauri::command]
+pub fn awake_status(state: State<'_, AppState>) -> Result<Vec<crate::awake::AwakeStatus>> {
+    Ok(state.awake.status_all())
 }
 
 /// Everything needed to point a client at this agent. Assembled once, at the

@@ -528,44 +528,78 @@ fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<Stri
 
 async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -> Result<String> {
     let store = &state.store;
+    // A supervised run was started to deal with named threads and is billing
+    // the whole time it sits here. Parking it for an hour would turn one
+    // wake-up into an hour-long session that answers nothing, so it gets long
+    // enough to catch a reply that is already on its way and no longer.
+    let ceiling = if ctx.supervised { 15 } else { 3600 };
     let timeout_s = args
         .get("timeout_s")
         .and_then(|v| v.as_i64())
         .unwrap_or(60)
-        .clamp(1, 3600) as u64;
+        .clamp(1, ceiling) as u64;
     // Subscribe before the first read, otherwise an event landing between the
     // query and the subscribe would be missed and we would block for nothing.
     let mut rx = store.events.subscribe();
-    let cursor = match args.get("cursor").and_then(|v| v.as_i64()) {
+    let mut cursor = match args.get("cursor").and_then(|v| v.as_i64()) {
         Some(c) => c,
         None => store.latest_seq()?,
     };
 
-    let joined = store.rooms_for(ctx.id)?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     loop {
-        // Everything from every room this agent is in.
-        let rows: Vec<_> = store
-            .events_since(cursor, None, 200)?
+        // Re-read each time round: rooms can be joined or left while we wait,
+        // and an agent revoked mid-poll must stop being told things.
+        if !store.agent_is_live(ctx.id)? {
+            return Err(Error::Forbidden("this agent's key is no longer valid".into()));
+        }
+        let joined = store.rooms_for(ctx.id)?;
+
+        let scanned = store.events_since(cursor, None, 200)?;
+        // Where we got to, whether or not any of it concerned us. Advancing
+        // only past *matched* rows was a starvation bug: once 200 events for
+        // other rooms sat ahead of the cursor, every call re-read that same
+        // window and the agent never saw anything again.
+        let last_scanned = scanned.last().map(|r| r.seq);
+        let rows: Vec<_> = scanned
             .into_iter()
             .filter(|e| e.room_id.map(|r| joined.contains(&r)).unwrap_or(false))
             .take(100)
             .collect();
+
         if !rows.is_empty() {
             let next = rows.last().map(|r| r.seq).unwrap_or(cursor);
             return Ok(serde_json::to_string_pretty(&json!({
                 "next_cursor": next,
                 "events": rows,
-                "then": "Act on these, then call wait_for_updates again with this next_cursor. \
-                         Staying in the loop is how you keep seeing work.",
+                "then": if ctx.supervised {
+                    "Rivendell started you for these. Deal with them and exit — you will be \
+                     started again when there is more. Do not loop here."
+                } else {
+                    "Act on these, then call wait_for_updates again with this next_cursor. \
+                     Staying in the loop is how you keep seeing work."
+                },
             }))?);
         }
+
+        if let Some(seq) = last_scanned {
+            // None of it was ours, but we have moved past it and there may be
+            // more already waiting.
+            cursor = seq;
+            continue;
+        }
+
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return Ok(serde_json::to_string_pretty(&json!({
                 "next_cursor": cursor,
                 "events": [],
-                "note": "Nothing happened before the timeout. Call again with this next_cursor."
+                "note": if ctx.supervised {
+                    "Nothing new. You were started for work already named in your instructions \
+                     — finish that and exit rather than waiting here."
+                } else {
+                    "Nothing happened before the timeout. Call again with this next_cursor."
+                },
             }))?);
         }
         match tokio::time::timeout_at(deadline, rx.recv()).await {

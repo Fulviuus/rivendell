@@ -1,4 +1,7 @@
-import { Avatar, Button, Icon } from "../ui";
+import { useState } from "react";
+import { api, errText } from "../api";
+import { useStore } from "../store";
+import { Avatar, Button, Icon, Modal, Toggle } from "../ui";
 import type { Agent } from "../types";
 
 /**
@@ -18,6 +21,7 @@ export function AgentRoster({
   onRotate,
   onRemove,
   onDelete,
+  onChanged,
 }: {
   agents: Agent[];
   /** "room" offers remove; "project" offers delete. Never both. */
@@ -29,7 +33,22 @@ export function AgentRoster({
   onRotate: (a: Agent) => void;
   onRemove?: (a: Agent) => void;
   onDelete?: (a: Agent) => void;
+  /** Called after the awake switch changes, so the caller can reload its list. */
+  onChanged?: () => void | Promise<void>;
 }) {
+  const { awake, notify, refreshAwake } = useStore();
+  const [confirming, setConfirming] = useState<Agent | null>(null);
+
+  async function setAwake(a: Agent, on: boolean) {
+    try {
+      await api.setAgentAwake(a.id, on);
+      await refreshAwake();
+      await onChanged?.();
+    } catch (e) {
+      notify("error", errText(e));
+    }
+  }
+
   return (
     <div className="space-y-1">
       {agents.length === 0 && (
@@ -38,69 +57,103 @@ export function AgentRoster({
         </p>
       )}
 
-      {agents.map((a) => (
-        <div
-          key={a.id}
-          className={`flex items-center gap-2 rounded-lg transition hover:bg-hover ${
-            compact ? "px-1.5 py-1" : "bg-card px-2.5 py-2 shadow-card ring-1 ring-line"
-          }`}
-        >
-          <Avatar name={a.name} icon={a.icon} color={a.color} size={compact ? 22 : 26} />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span
-                className={`font-medium ${a.revoked_at ? "text-faint line-through" : "text-strong"}`}
-              >
-                {a.name}
-              </span>
-              <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
-                {a.role}
-              </span>
-              {a.profile_label && (
-                <span className="text-[11.5px] text-faint">{a.profile_label}</span>
+      {agents.map((a) => {
+        // Rivendell can only start an agent it has a command for.
+        const startable = !!a.profile_key && a.profile_key !== "external";
+        const live = awake[a.id];
+        return (
+          <div
+            key={a.id}
+            className={`flex items-center gap-2 rounded-lg transition hover:bg-hover ${
+              compact ? "px-1.5 py-1" : "bg-card px-2.5 py-2 shadow-card ring-1 ring-line"
+            }`}
+          >
+            <Avatar name={a.name} icon={a.icon} color={a.color} size={compact ? 22 : 26} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`font-medium ${a.revoked_at ? "text-faint line-through" : "text-strong"}`}
+                >
+                  {a.name}
+                </span>
+                <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
+                  {a.role}
+                </span>
+                {a.profile_label && (
+                  <span className="text-[11.5px] text-faint">{a.profile_label}</span>
+                )}
+                {a.awake && <AwakeDot agent={a} />}
+              </div>
+              {a.key_preview && (
+                <code className="font-mono text-[11px] text-faint">{a.key_preview}</code>
+              )}
+              {!compact && a.system_note && (
+                <p className="mt-0.5 text-[12px] leading-snug text-muted">{a.system_note}</p>
+              )}
+              {!compact && a.awake && live?.trouble && (
+                <p className="mt-0.5 text-[12px] leading-snug text-rose-600 dark:text-rose-400">
+                  {live.trouble}
+                </p>
               )}
             </div>
-            {a.key_preview && (
-              <code className="font-mono text-[11px] text-faint">{a.key_preview}</code>
-            )}
-            {!compact && a.system_note && (
-              <p className="mt-0.5 text-[12px] leading-snug text-muted">{a.system_note}</p>
-            )}
+
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Toggle
+                on={a.awake}
+                disabled={!startable || !!a.revoked_at}
+                label={`Keep ${a.name} awake`}
+                title={
+                  a.revoked_at
+                    ? "This agent's key has been revoked."
+                    : !startable
+                      ? `Rivendell has no command for ${a.name}. Give it a launch profile other than External, or run it yourself.`
+                      : a.awake
+                        ? `Rivendell starts ${a.name} when its rooms have work. Switch off to stop.`
+                        : `Have Rivendell start ${a.name} when its rooms have work.`
+                }
+                onChange={(on) => (on ? setConfirming(a) : setAwake(a, false))}
+              />
+
+              <div className="flex gap-0.5">
+                <Button size="sm" variant="subtle" title="Edit" onClick={() => onEdit(a)}>
+                  <Icon name="pencil" size={11} />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="subtle"
+                  title="Issue a new key"
+                  onClick={() => onRotate(a)}
+                >
+                  <Icon name="key" size={11} />
+                </Button>
+
+                {mode === "room" && onRemove && (
+                  <Button
+                    size="sm"
+                    variant="subtle"
+                    title="Take out of this room — the agent and its key stay in the project"
+                    onClick={() => onRemove(a)}
+                  >
+                    <Icon name="x" size={11} />
+                  </Button>
+                )}
+
+                {/* Only where it cannot be mistaken for "remove from this room". */}
+                {mode === "project" && onDelete && (
+                  <Button
+                    size="sm"
+                    variant="subtle"
+                    title="Delete from the project — removes it from every room and kills its key"
+                    onClick={() => onDelete(a)}
+                  >
+                    <Icon name="trash" size={11} />
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
-
-          <div className="flex shrink-0 gap-0.5">
-            <Button size="sm" variant="subtle" title="Edit" onClick={() => onEdit(a)}>
-              <Icon name="pencil" size={11} />
-            </Button>
-            <Button size="sm" variant="subtle" title="Issue a new key" onClick={() => onRotate(a)}>
-              <Icon name="key" size={11} />
-            </Button>
-
-            {mode === "room" && onRemove && (
-              <Button
-                size="sm"
-                variant="subtle"
-                title="Take out of this room — the agent and its key stay in the project"
-                onClick={() => onRemove(a)}
-              >
-                <Icon name="x" size={11} />
-              </Button>
-            )}
-
-            {/* Only where it cannot be mistaken for "remove from this room". */}
-            {mode === "project" && onDelete && (
-              <Button
-                size="sm"
-                variant="subtle"
-                title="Delete from the project — removes it from every room and kills its key"
-                onClick={() => onDelete(a)}
-              >
-                <Icon name="trash" size={11} />
-              </Button>
-            )}
-          </div>
-        </div>
-      ))}
+        );
+      })}
 
       {onAdd && (
         <Button size="sm" variant="subtle" onClick={onAdd}>
@@ -108,6 +161,86 @@ export function AgentRoster({
           {addLabel ?? "Add an agent"}
         </Button>
       )}
+
+      {confirming && (
+        <ConfirmAwake
+          agent={confirming}
+          onClose={() => setConfirming(null)}
+          onConfirm={async () => {
+            const a = confirming;
+            setConfirming(null);
+            await setAwake(a, true);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Running now, waiting to run, or just awake. */
+function AwakeDot({ agent }: { agent: Agent }) {
+  const live = useStore((s) => s.awake[agent.id]);
+  const running = live?.running ?? false;
+  const trouble = live?.trouble;
+
+  const tone = trouble ? "bg-rose-500" : running ? "bg-emerald-500" : "bg-emerald-500/50";
+  const said = trouble
+    ? trouble
+    : running
+      ? "Running now."
+      : live?.last_outcome
+        ? `Awake. Last run ${live.last_outcome}.`
+        : "Awake, waiting for something to happen.";
+
+  return (
+    <span className="flex items-center gap-1 text-[11px] text-muted" title={said}>
+      <span className={`h-1.5 w-1.5 rounded-full ${tone} ${running ? "pulse-soft" : ""}`} />
+      {running ? "running" : "awake"}
+    </span>
+  );
+}
+
+/**
+ * Turning this on spends money while nobody is watching, and for a coder it
+ * also lets an LLM edit the working tree unattended. Both are reasonable things
+ * to want and neither should be a surprise, so they get said out loud once.
+ */
+function ConfirmAwake({
+  agent,
+  onClose,
+  onConfirm,
+}: {
+  agent: Agent;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const coder = agent.role === "CODER";
+  return (
+    <Modal title={`Keep ${agent.name} awake?`} subtitle={agent.profile_label ?? ""} onClose={onClose}>
+      <div className="space-y-3 text-[13px] leading-relaxed text-body">
+        <p>
+          Rivendell will start {agent.name} whenever a thread moves in a room it has joined —
+          including while you are away from the machine. Each start is a real session and costs
+          real money.
+        </p>
+        <p className="text-muted">
+          It only starts one at a time, only for threads it can still reply to, and it stops after{" "}
+          <span className="text-body">40 starts in an hour</span> in case something loops.
+        </p>
+        {coder && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900 ring-1 ring-amber-300/60 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/25">
+            {agent.name} is a coder, so it runs with permission to edit files in the project
+            folder. Unattended, that means changes to your working tree with nobody watching.
+            Assistants never get that permission.
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={onConfirm}>
+            Keep it awake
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -450,6 +450,46 @@ export function Button({
   );
 }
 
+/**
+ * A switch. Deliberately not a checkbox: this turns on something that spends
+ * the user's money, so it should read as a state you can see across the room,
+ * not a tickbox you might have missed.
+ */
+export function Toggle({
+  on,
+  onChange,
+  disabled,
+  title,
+  label,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label ?? title}
+      title={title}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        on ? "bg-accent" : "bg-chip ring-1 ring-inset ring-line"
+      }`}
+    >
+      <span
+        className={`absolute h-3.5 w-3.5 rounded-full bg-white shadow-card transition-all ${
+          on ? "left-[13px]" : "left-[2px]"
+        }`}
+      />
+    </button>
+  );
+}
+
 export function Field({
   label,
   hint,

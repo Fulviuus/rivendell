@@ -62,6 +62,18 @@ export interface Agent {
   system_note: string;
   created_at: string;
   revoked_at: string | null;
+  /** Rivendell starts this agent itself when its rooms have work for it. */
+  awake: boolean;
+}
+
+/** Live run state for an awake agent. Not persisted — it dies with the app. */
+export interface AwakeStatus {
+  agent_id: number;
+  running: boolean;
+  waiting: number;
+  last_run_at: string | null;
+  last_outcome: string | null;
+  trouble: string | null;
 }
 
 export interface Tag {

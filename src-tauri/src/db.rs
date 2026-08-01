@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS agents (
   key_hash      TEXT,
   key_preview   TEXT,
   auto_dispatch INTEGER NOT NULL DEFAULT 1,
+  -- Rivendell starts this agent itself when its rooms have work for it.
+  awake         INTEGER NOT NULL DEFAULT 0,
   system_note   TEXT NOT NULL DEFAULT '',
   -- Empty means "pick one from the name"; a value here is an explicit choice.
   color         TEXT NOT NULL DEFAULT '',
@@ -458,6 +460,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("projects", "color", "TEXT NOT NULL DEFAULT ''"),
         ("rooms", "claim_window_secs", "INTEGER NOT NULL DEFAULT 120"),
         ("threads", "gather_started_at", "TEXT"),
+        ("agents", "awake", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let exists: bool = conn
             .prepare(&format!(

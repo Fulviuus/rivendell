@@ -4,6 +4,7 @@ import { api } from "./api";
 import type {
   Agent,
   AgentProfile,
+  AwakeStatus,
   EventNotice,
   Project,
   Room,
@@ -32,6 +33,8 @@ interface State {
   tagFilter: string;
   sortBy: ThreadSort;
   toast: { kind: "error" | "info"; text: string } | null;
+  /** Live run state by agent id, pushed from the supervisor. */
+  awake: Record<number, AwakeStatus>;
 
   boot: () => Promise<void>;
   selectRoom: (id: number | null) => Promise<void>;
@@ -40,6 +43,7 @@ interface State {
   refreshThreads: () => Promise<void>;
   refreshAgents: () => Promise<void>;
   refreshThread: () => Promise<void>;
+  refreshAwake: () => Promise<void>;
   setFilters: (f: { status?: string; tag?: string; sort?: ThreadSort }) => Promise<void>;
   notify: (kind: "error" | "info", text: string) => void;
 }
@@ -56,6 +60,7 @@ export const useStore = create<State>((set, get) => ({
   agents: [],
   threadId: null,
   thread: null,
+  awake: {},
   statusFilter: "open",
   tagFilter: "all",
   sortBy: "last_reply",
@@ -89,13 +94,23 @@ export const useStore = create<State>((set, get) => ({
       if (n.kind.startsWith("room.") || n.kind.startsWith("project.")) {
         await s.refreshRooms();
       }
-      if (n.room_id !== null && n.room_id !== s.roomId) return;
       if (n.kind.startsWith("agent.")) await s.refreshAgents();
+      if (n.room_id !== null && n.room_id !== s.roomId) return;
       await s.refreshThreads();
       if (n.thread_id !== null && n.thread_id === s.threadId) await s.refreshThread();
     });
 
     await listen<string>("rivendell://server", (e) => set({ serverUrl: e.payload }));
+
+    // Run state rides its own channel rather than the shared event log: what
+    // Rivendell started is the user's business, not something to announce to
+    // every agent listening on wait_for_updates.
+    await listen<AwakeStatus>("rivendell://awake", (e) => {
+      const s = e.payload;
+      set((prev) => ({ awake: { ...prev.awake, [s.agent_id]: s } }));
+      if (s.trouble) get().notify("error", s.trouble);
+    });
+    await get().refreshAwake();
   },
 
   selectRoom: async (id) => {
@@ -125,6 +140,11 @@ export const useStore = create<State>((set, get) => ({
     const { roomId } = get();
     if (roomId === null) return;
     set({ agents: await api.listAgents(roomId) });
+  },
+
+  refreshAwake: async () => {
+    const rows = await api.awakeStatus();
+    set({ awake: Object.fromEntries(rows.map((r) => [r.agent_id, r])) });
   },
 
   refreshThread: async () => {

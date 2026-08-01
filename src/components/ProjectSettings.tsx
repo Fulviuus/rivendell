@@ -273,6 +273,10 @@ export function ProjectSettings({
                     onAdd={() => setAdding({ id: room.id, name: room.name })}
                     onEdit={setEditing}
                     onRotate={setRotating}
+                    onChanged={async () => {
+                      await loadAgents();
+                      await refreshAgents();
+                    }}
                     onRemove={async (a) => {
                       try {
                         await api.leaveRoom(room.id, a.id);
@@ -326,6 +330,10 @@ export function ProjectSettings({
             agents={agents}
             onEdit={setEditing}
             onRotate={setRotating}
+            onChanged={async () => {
+              await loadAgents();
+              await refreshAgents();
+            }}
             onDelete={async (a) => {
               try {
                 await api.deleteAgent(a.id);

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod awake;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -36,9 +37,29 @@ pub fn run() {
             let store = Arc::new(Store::open(&dir.join("rivendell.db"))?);
 
             let mcp_url = Arc::new(std::sync::RwLock::new(String::new()));
+
+            // Before anything else starts one: kill whatever a previous run
+            // left behind. Force Quit, `kill -9` and `rivendell.sh` restarting
+            // the app all skip every in-process teardown, and on macOS the
+            // orphan is simply reparented and keeps billing.
+            awake::Supervisor::reap_orphans(&dir);
+            let supervisor = awake::Supervisor::new(store.clone(), mcp_url.clone(), dir.clone());
+            supervisor.start();
+
             app.manage(AppState {
                 store: store.clone(),
                 mcp_url: mcp_url.clone(),
+                awake: supervisor.clone(),
+            });
+
+            // Per-agent run state, kept out of the shared event log so it does
+            // not turn up in what agents themselves are told.
+            let handle = app.handle().clone();
+            let mut rx = supervisor.status.subscribe();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(s) = rx.recv().await {
+                    let _ = handle.emit("rivendell://awake", s);
+                }
             });
 
             // Hand stalled threads back to the coder without waiting for
@@ -128,6 +149,8 @@ pub fn run() {
             commands::create_agent,
             commands::update_agent,
             commands::rotate_agent_key,
+            commands::set_agent_awake,
+            commands::awake_status,
             commands::set_agent_revoked,
             commands::join_room,
             commands::leave_room,
@@ -148,6 +171,14 @@ pub fn run() {
             commands::list_project_files,
             commands::git_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Rivendell");
+        .build(tauri::generate_context!())
+        .expect("error while building Rivendell")
+        .run(|app, event| {
+            // Tauri's quit ends in `std::process::exit`, so Drop never runs and
+            // `kill_on_drop` cannot be the guarantee. This is the orderly leg;
+            // `reap_orphans` above is the one that covers everything else.
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<AppState>().awake.shutdown();
+            }
+        });
 }

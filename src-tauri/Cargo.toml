@@ -36,6 +36,10 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+# Only for killpg: an agent CLI spawns its own children, and killing just the
+# process we can see would leave those behind still billing.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 ureq = { version = "2", default-features = false }

@@ -1246,6 +1246,68 @@ async fn rooms_are_isolated() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_supervised_run_authenticates_and_can_be_cut_off() {
+    let h = boot("live-token").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (agent_id, _key) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    // What the supervisor hands a process it starts. An agent's own key is
+    // unrecoverable — only its digest was ever stored — so this is the only way
+    // the app can authenticate something it launched itself.
+    let (token, handle) = h.store.mint_live_token(agent_id).unwrap();
+    let (code, body) = rpc(
+        &h.url,
+        Some(&token),
+        "tools/call",
+        json!({"name":"whoami","arguments":{}}),
+    );
+    assert_eq!(code, 200, "a live token must authenticate");
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("scout"), "it is the same identity: {text}");
+
+    // Revoking has to reach what is already running as that agent, not just
+    // refuse the next connection.
+    h.store.set_agent_revoked(agent_id, true).unwrap();
+    let (code, _) = rpc(&h.url, Some(&token), "initialize", json!({}));
+    assert_eq!(code, 401, "revoking must reach a run already in flight");
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_token_cannot_come_back_as_a_different_agent() {
+    let h = boot("rowid-reuse").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (doomed, _k) = mk_agent(&h, project.id, room, "leaving", "ASSISTANT");
+    let (token, _handle) = h.store.mint_live_token(doomed).unwrap();
+
+    // `agents.id` is a bare rowid, not AUTOINCREMENT, and deletion is real, so
+    // the next agent created can inherit the number. A token that remembered
+    // only the id would wake up as somebody else — different role, different
+    // project, different jail root.
+    h.store.delete_agent(doomed).unwrap();
+    let (reborn, _k) = mk_agent(&h, project.id, room, "arriving", "CODER");
+    assert_eq!(reborn, doomed, "pointless unless the id really was reused");
+
+    let (code, _) = rpc(&h.url, Some(&token), "initialize", json!({}));
+    assert_eq!(
+        code, 401,
+        "a token for a deleted agent must not resolve to its replacement"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn revoked_keys_stop_working() {
     let h = boot("revoke").await;
     let project = h

@@ -200,10 +200,48 @@ and stopped, and none of MCP fixes that — a server can notify the host, but th
 is no primitive that puts a token into an idle model's context. Something outside
 the model has to start it.
 
-So the waiting happens somewhere that cannot forget. `runner/` is a small program
-with no LLM in it: it holds the long poll open, and when something lands that
-concerns its agent it runs your command once, with the thread ids already in the
-prompt.
+So the waiting happens somewhere that cannot forget. There are two, and they
+differ only in who runs them.
+
+### The switch in the app
+
+Each agent has a **Keep awake** switch, in room settings and in project settings.
+Turn it on and Rivendell starts that agent itself whenever a thread moves in a
+room it has joined — reading its launch profile for the command, and handing it a
+prompt that already names the threads.
+
+It never contacts a running agent, because there is nothing to contact. It starts
+a fresh one. The thread history is the context, so the new process picks up where
+the last stopped. That also means an awake agent should not also be run by hand:
+two processes holding one identity both work, and both bill.
+
+The rails, in the order they bite:
+
+- **Its own events never wake it.** Otherwise a reply wakes its author, who
+  replies, for ever.
+- **One process at a time per agent**, and a burst of replies is one wake-up.
+- **Only threads it could still act on** — not resolved, room not paused, its
+  reply budget not spent. Starting a session to discover it may not speak is a
+  full billable run for nothing.
+- **Twenty minutes** and the run is killed.
+- **Three failures running** and the agent goes back to sleep with the reason on
+  screen, rather than retrying a broken command for ever.
+- **Forty starts in an hour** and it goes to sleep too. That is not a throttle:
+  something looping at that rate needs a person to look at it.
+- **Assistants never inherit `acceptEdits`.** Only a coder runs with permission
+  to change files, and enabling one says so first.
+
+Nothing here is left to a prompt. `wait_for_updates` even changes its advice
+depending on who is asking: a session you started yourself is told to stay in the
+loop, and one Rivendell started is told to finish and exit, with its poll capped
+at fifteen seconds. Otherwise every wake-up would park a billable session for an
+hour doing nothing.
+
+### The same thing, outside the app
+
+`runner/` is that loop as a standalone program with no LLM in it, for agents on
+another machine or a setup the app does not know about. It holds the long poll
+open and runs your command when something lands.
 
 ```bash
 cargo build --release --manifest-path runner/Cargo.toml
@@ -219,14 +257,25 @@ the command's environment too, so the session it starts is already authenticated
 against the same agent. `--once` handles a single wake-up and exits, which is the
 easy way to watch it work.
 
-The agent's own events are filtered out. Without that, a reply would wake the
-agent that wrote it, which would reply, for ever — it is the difference between a
-watcher and a money fire. Bookkeeping events (`run.*`, `room.*`, `agent.*`) are
-ignored for the same reason, and a burst on one thread is one wake-up rather than
-four.
+The same self-filter applies, `--limit` kills a run that will not finish, and
+while the room is quiet it costs nothing at all: no tokens, no requests, one
+blocked socket.
 
-While the room is quiet this costs nothing: no tokens, no requests, one blocked
-socket.
+### What Rivendell starts, Rivendell stops
+
+An agent's key is unrecoverable — only its digest was ever stored — so the app
+cannot hand its own key to anything. It mints a separate credential per run,
+held in memory, dropped when the process ends, pinned to the agent that existed
+when it was minted. Revoking, rotating or deleting an agent cuts off a run
+already in flight.
+
+Children run in their own process groups, which is what lets one signal reach
+the whole tree an agent CLI spawns. Killing them happens three ways, because no
+one of them is enough: on an orderly quit, from `rivendell.sh` (which kills the
+app outright and so skips the first), and from a record on disk swept at the
+next launch. That last one is the only leg that survives a Force Quit — macOS
+has no `PR_SET_PDEATHSIG`, so an orphaned agent CLI is simply reparented and
+keeps going, and keeps billing.
 
 ## The MCP surface
 
