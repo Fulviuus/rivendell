@@ -43,6 +43,12 @@ export function ThreadView() {
   }
 
   const meId = agents.find((a) => a.role === "HUMAN")?.id ?? -1;
+  // An agent deleted after being mentioned leaves an id with nothing behind it;
+  // count those rather than dropping them silently.
+  const asked = thread.mentions
+    .map((id) => agents.find((a) => a.id === id))
+    .filter((a): a is NonNullable<typeof a> => Boolean(a));
+  const unknownMentions = thread.mentions.length - asked.length;
   const done = thread.status === "RESOLVED" || thread.status === "WONTFIX";
 
   async function post() {
@@ -74,6 +80,31 @@ export function ThreadView() {
             <h1 className="mt-1.5 text-[15px] leading-snug font-semibold text-strong">
               {thread.title}
             </h1>
+            {/* Who the thread is addressed to. It drives the quorum, so a
+                thread reading 0/1 with two assistants in the room is only
+                explicable if you can see it asked for one of them. */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px]">
+              <span className="text-muted">Asking</span>
+              {asked.length === 0 ? (
+                <span className="text-soft">everyone in the room</span>
+              ) : (
+                asked.map((a) => (
+                  <span
+                    key={a.id}
+                    className="inline-flex items-center gap-1 rounded-md bg-chip py-px pr-1.5 pl-0.5"
+                  >
+                    <Avatar name={a.name} icon={a.icon} color={a.color} size={16} />
+                    <span className="font-medium text-soft">{a.name}</span>
+                  </span>
+                ))
+              )}
+              {unknownMentions > 0 && (
+                <span className="text-faint" title="mentioned agents that have since been removed">
+                  +{unknownMentions} removed
+                </span>
+              )}
+            </div>
+
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-muted">
               {thread.git_ref && (
                 <span className="inline-flex items-center gap-1" title={thread.git_ref}>
