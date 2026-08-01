@@ -231,6 +231,7 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
     migrate_agents_to_projects(&conn)?;
     migrate(&conn)?;
     seed(&conn)?;
+    ensure_human_in_every_room(&conn)?;
     Ok(conn)
 }
 
@@ -266,7 +267,19 @@ fn migrate_agents_to_projects(conn: &Connection) -> rusqlite::Result<()> {
     }
     tracing::info!("migrating agents from rooms to projects");
 
+    // Must be outside the transaction — SQLite ignores this pragma inside one.
     conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+
+    // Everything from here is one transaction. Without it, a failure partway
+    // leaves the database half-converted: rows already merged away and a
+    // stranded agents_new that makes every later attempt fail on CREATE.
+    let conn2 = conn;
+    let tx = conn.unchecked_transaction()?;
+    let conn = &tx;
+
+    // A previous attempt may have died after CREATE. Its table is empty and
+    // worthless, and its presence is what blocks the retry.
+    conn.execute_batch("DROP TABLE IF EXISTS agents_new;")?;
 
     // (id, project_id, room_id, name, role) in creation order, so "first wins"
     // means the oldest keeps its name.
@@ -374,14 +387,38 @@ fn migrate_agents_to_projects(conn: &Connection) -> rusqlite::Result<()> {
 
     conn.execute_batch(
         "DROP TABLE agents;
-         ALTER TABLE agents_new RENAME TO agents;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE agents_new RENAME TO agents;",
     )?;
+    tx.commit()?;
+    // Safe to restore now that the rebuild has committed.
+    conn2.execute_batch("PRAGMA foreign_keys = ON;")?;
     tracing::info!(
         "agents migrated: {} renamed, {} merged",
         renames.len(),
         merges.len()
     );
+    Ok(())
+}
+
+/// You are a participant in every room, not a spectator, so the project's HUMAN
+/// belongs to all of them. Rooms can end up without one — a room created before
+/// this was an invariant, or one whose human was merged away by the move to
+/// project-level agents — and a room with no human is one you cannot post in.
+fn ensure_human_in_every_room(conn: &Connection) -> rusqlite::Result<()> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO room_members(room_id, agent_id, joined_at)
+         SELECT r.id, a.id, ?1
+         FROM rooms r
+         JOIN agents a ON a.project_id = r.project_id AND a.role = 'HUMAN'
+         WHERE NOT EXISTS(
+           SELECT 1 FROM room_members m
+           JOIN agents ma ON ma.id = m.agent_id
+           WHERE m.room_id = r.id AND ma.role = 'HUMAN')",
+        [now_iso()],
+    )?;
+    if n > 0 {
+        tracing::info!("joined you to {n} room(s) that had no human");
+    }
     Ok(())
 }
 
@@ -595,6 +632,65 @@ mod tests {
             .query_row("SELECT project_id FROM agents WHERE id=1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(project, 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A migration that died partway leaves an empty `agents_new` behind, and
+    /// every later attempt then failed on CREATE — the database could never
+    /// finish upgrading without manual surgery. Retrying has to just work.
+    #[test]
+    fn recovers_from_a_half_finished_migration() {
+        let path =
+            std::env::temp_dir().join(format!("rivendell-halfmig-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                   folder_path TEXT NOT NULL UNIQUE, git_remote TEXT, created_at TEXT NOT NULL);
+                 CREATE TABLE rooms (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL,
+                   name TEXT NOT NULL, created_at TEXT NOT NULL);
+                 CREATE TABLE agents (
+                   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, name TEXT NOT NULL,
+                   role TEXT NOT NULL, profile_id INTEGER, key_id TEXT UNIQUE, key_hash TEXT,
+                   key_preview TEXT, system_note TEXT NOT NULL DEFAULT '',
+                   color TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_at TEXT,
+                   UNIQUE(room_id, name));
+                 INSERT INTO projects VALUES (1,'demo','/tmp/demo-half',NULL,'t');
+                 INSERT INTO rooms VALUES (1,1,'general','t');
+                 INSERT INTO agents (id,room_id,name,role,key_id,created_at)
+                   VALUES (1,1,'you','HUMAN','k1','t'), (2,1,'main','CODER','k2','t');
+
+                 -- the debris of a run that died after CREATE
+                 CREATE TABLE agents_new (
+                   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, name TEXT NOT NULL,
+                   role TEXT NOT NULL, profile_id INTEGER, key_id TEXT UNIQUE, key_hash TEXT,
+                   key_preview TEXT, system_note TEXT NOT NULL DEFAULT '',
+                   color TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_at TEXT,
+                   UNIQUE(project_id, name));",
+            )
+            .unwrap();
+        }
+
+        let conn = open(&path).expect("a half-finished migration must be recoverable");
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "both agents survive the retry");
+        let has_project: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('agents') WHERE name='project_id'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_project, "and the table really was rebuilt");
+        let leftover: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE name='agents_new'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!leftover, "no debris is left for the next run to trip on");
 
         drop(conn);
         let _ = std::fs::remove_file(&path);
