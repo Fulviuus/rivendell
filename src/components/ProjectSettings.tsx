@@ -3,7 +3,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../api";
 import { useStore } from "../store";
 import {
-  Avatar,
   Button,
   ColorPicker,
   Field,
@@ -13,6 +12,7 @@ import {
   swatchFor,
   type AgentColor,
 } from "../ui";
+import { AgentRoster } from "./AgentRoster";
 import { ConnectionModal, EditAgentModal, NewAgentModal } from "./AgentModals";
 import type { Agent, NewAgentKey, Project } from "../types";
 
@@ -241,7 +241,8 @@ export function ProjectSettings({
           </h3>
           <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
             An agent belongs to one room, and its API key is what puts it there. The same tool in
-            two rooms is two agents with two keys.
+            two rooms is two agents with two keys. You can also manage these from a room's own
+            settings — the gear above the thread.
           </p>
 
           <div className="space-y-3">
@@ -255,77 +256,24 @@ export function ProjectSettings({
                   <div className="mb-1.5 flex items-center gap-1.5">
                     <Icon name="hash" size={12} className="text-faint" />
                     <span className="flex-1 font-medium text-strong">{room.name}</span>
-                    <Button
-                      size="sm"
-                      variant="subtle"
-                      onClick={() => setAdding({ id: room.id, name: room.name })}
-                    >
-                      <Icon name="plus" size={12} />
-                      Agent
-                    </Button>
                   </div>
 
-                  {mine.length === 0 ? (
-                    <p className="px-1 py-1 text-[12px] text-faint">No agents in this room.</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {mine.map((a) => (
-                        <div
-                          key={a.id}
-                          className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition hover:bg-hover"
-                        >
-                          <Avatar name={a.name} icon={a.icon} color={a.color} size={22} />
-                          <span
-                            className={`font-medium ${a.revoked_at ? "text-faint line-through" : "text-base"}`}
-                          >
-                            {a.name}
-                          </span>
-                          <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
-                            {a.role}
-                          </span>
-                          {a.key_preview && (
-                            <code className="truncate font-mono text-[11px] text-faint">
-                              {a.key_preview}
-                            </code>
-                          )}
-                          <div className="ml-auto flex shrink-0 gap-0.5">
-                            <Button
-                              size="sm"
-                              variant="subtle"
-                              title="Edit"
-                              onClick={() => setEditing(a)}
-                            >
-                              <Icon name="pencil" size={11} />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="subtle"
-                              title="Issue a new key"
-                              onClick={() => setRotating(a)}
-                            >
-                              <Icon name="key" size={11} />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="subtle"
-                              title="Delete agent"
-                              onClick={async () => {
-                                try {
-                                  await api.deleteAgent(a.id);
-                                  await loadAgents();
-                                  await refreshAgents();
-                                } catch (e) {
-                                  notify("error", errText(e));
-                                }
-                              }}
-                            >
-                              <Icon name="trash" size={11} />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <AgentRoster
+                    compact
+                    agents={mine}
+                    onAdd={() => setAdding({ id: room.id, name: room.name })}
+                    onEdit={setEditing}
+                    onRotate={setRotating}
+                    onDelete={async (a) => {
+                      try {
+                        await api.deleteAgent(a.id);
+                        await loadAgents();
+                        await refreshAgents();
+                      } catch (e) {
+                        notify("error", errText(e));
+                      }
+                    }}
+                  />
                 </div>
               );
             })}

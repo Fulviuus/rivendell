@@ -2,9 +2,12 @@ import { useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
 import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
+import { AgentRoster } from "./AgentRoster";
+import { ConnectionModal, EditAgentModal, NewAgentModal } from "./AgentModals";
+import type { Agent, NewAgentKey } from "../types";
 
 export function RoomSettings({ onClose }: { onClose: () => void }) {
-  const { rooms, roomId, refreshRooms, selectRoom, notify } = useStore();
+  const { rooms, roomId, agents, refreshRooms, refreshAgents, selectRoom, notify } = useStore();
   const room = rooms.find((r) => r.id === roomId);
 
   const [purpose, setPurpose] = useState(room?.purpose ?? "");
@@ -14,9 +17,87 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   const [timeout, setTimeoutSecs] = useState(String((room?.response_timeout_secs ?? 300) / 60));
   const [claimWindow, setClaimWindow] = useState(String(room?.claim_window_secs ?? 120));
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Agent | null>(null);
+  const [rotating, setRotating] = useState<Agent | null>(null);
+  const [revealed, setRevealed] = useState<{ key: NewAgentKey; name: string; rotated: boolean } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
 
   if (!room) return null;
+
+  if (revealed) {
+    return (
+      <ConnectionModal
+        bundle={revealed.key}
+        name={revealed.name}
+        rotated={revealed.rotated}
+        onClose={() => setRevealed(null)}
+      />
+    );
+  }
+  if (adding) {
+    return (
+      <NewAgentModal
+        roomId={room.id}
+        roomName={room.name}
+        onClose={() => setAdding(false)}
+        onCreated={async (key, name) => {
+          setAdding(false);
+          await refreshAgents();
+          setRevealed({ key, name, rotated: false });
+        }}
+      />
+    );
+  }
+  if (editing) {
+    return (
+      <EditAgentModal
+        agent={editing}
+        onClose={async () => {
+          setEditing(null);
+          await refreshAgents();
+        }}
+      />
+    );
+  }
+  if (rotating) {
+    const target = rotating;
+    return (
+      <Modal
+        title={`Issue a new key for ${target.name}?`}
+        subtitle="The current one stops working immediately."
+        onClose={() => setRotating(null)}
+      >
+        <div className="space-y-3.5">
+          <p className="text-[13px] leading-relaxed text-body">
+            Only a hash of a key is stored, so the current one cannot be shown again. Anything
+            connected as <b>{target.name}</b> will start getting 401s until you give it the new key.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setRotating(null)}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                try {
+                  const key = await api.rotateAgentKey(target.id);
+                  setRotating(null);
+                  await refreshAgents();
+                  setRevealed({ key, name: target.name, rotated: true });
+                } catch (e) {
+                  notify("error", errText(e));
+                }
+              }}
+            >
+              <Icon name="key" size={12} />
+              Issue new key
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   async function save() {
     if (!room) return;
@@ -49,7 +130,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal title={`#${room.name}`} subtitle={room.folder_path} onClose={onClose}>
+    <Modal wide title={`#${room.name}`} subtitle={room.folder_path} onClose={onClose}>
       <div className="space-y-3.5">
         <div
           className={`flex items-center gap-3 rounded-xl p-3 ring-1 ${
@@ -74,6 +155,30 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
           <Button size="sm" onClick={togglePause}>
             {room.paused ? "Resume" : "Pause room"}
           </Button>
+        </div>
+
+        <div>
+          <h3 className="mb-1 text-[11.5px] font-semibold tracking-wide text-soft uppercase">
+            Agents in this room
+          </h3>
+          <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
+            An agent belongs to one room — its key is what puts it here. To use the same tool in
+            another room, add it there too and it gets its own key.
+          </p>
+          <AgentRoster
+            agents={agents}
+            onAdd={() => setAdding(true)}
+            onEdit={setEditing}
+            onRotate={setRotating}
+            onDelete={async (a) => {
+              try {
+                await api.deleteAgent(a.id);
+                await refreshAgents();
+              } catch (e) {
+                notify("error", errText(e));
+              }
+            }}
+          />
         </div>
 
         <Field label="Purpose">
