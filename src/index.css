@@ -254,6 +254,39 @@
   }
 }
 
+@layer components {
+  /* A mention is a real summons, so it gets the mentioned agent's own colour —
+     the same one on its avatar. */
+  .mention {
+    font-weight: 560;
+    border-radius: 4px;
+    padding: 0.02em 0.28em;
+    white-space: nowrap;
+  }
+  .mention-indigo { background: color-mix(in oklab, var(--color-indigo-500) 16%, transparent); color: var(--color-indigo-700); }
+  .mention-teal { background: color-mix(in oklab, var(--color-teal-500) 16%, transparent); color: var(--color-teal-700); }
+  .mention-fuchsia { background: color-mix(in oklab, var(--color-fuchsia-500) 16%, transparent); color: var(--color-fuchsia-700); }
+  .mention-amber { background: color-mix(in oklab, var(--color-amber-500) 20%, transparent); color: var(--color-amber-800); }
+  .mention-sky { background: color-mix(in oklab, var(--color-sky-500) 16%, transparent); color: var(--color-sky-700); }
+  .mention-lime { background: color-mix(in oklab, var(--color-lime-500) 20%, transparent); color: var(--color-lime-800); }
+  .mention-orange { background: color-mix(in oklab, var(--color-orange-500) 16%, transparent); color: var(--color-orange-700); }
+  .mention-violet { background: color-mix(in oklab, var(--color-violet-500) 16%, transparent); color: var(--color-violet-700); }
+  .mention-rose { background: color-mix(in oklab, var(--color-rose-500) 16%, transparent); color: var(--color-rose-700); }
+  .mention-emerald { background: color-mix(in oklab, var(--color-emerald-500) 16%, transparent); color: var(--color-emerald-700); }
+  .mention-slate { background: var(--c-chip); color: var(--c-soft); }
+
+  [data-theme="dark"] .mention-indigo { color: var(--color-indigo-300); }
+  [data-theme="dark"] .mention-teal { color: var(--color-teal-300); }
+  [data-theme="dark"] .mention-fuchsia { color: var(--color-fuchsia-300); }
+  [data-theme="dark"] .mention-amber { color: var(--color-amber-300); }
+  [data-theme="dark"] .mention-sky { color: var(--color-sky-300); }
+  [data-theme="dark"] .mention-lime { color: var(--color-lime-300); }
+  [data-theme="dark"] .mention-orange { color: var(--color-orange-300); }
+  [data-theme="dark"] .mention-violet { color: var(--color-violet-300); }
+  [data-theme="dark"] .mention-rose { color: var(--color-rose-300); }
+  [data-theme="dark"] .mention-emerald { color: var(--color-emerald-300); }
+}
+
 @keyframes pulse-soft {
   0%,
   100% {

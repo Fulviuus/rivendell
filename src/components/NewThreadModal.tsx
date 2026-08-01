@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
+import { Button, Field, Icon, Input, Modal } from "../ui";
+import { MentionTextarea } from "./MentionTextarea";
 import type { ContextInput } from "../types";
 
 interface Attachment {
@@ -122,14 +123,15 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        <Field label="The ask" hint="markdown">
-          <Textarea
+        <Field label="The ask" hint="markdown · @name to address an agent">
+          <MentionTextarea
             rows={7}
+            agents={agents}
             value={body}
             placeholder={
               "What you tried, what you expected, what happened instead.\n\nBe specific — vague asks get vague reviews."
             }
-            onChange={(e) => setBody(e.target.value)}
+            onChange={setBody}
           />
         </Field>
 

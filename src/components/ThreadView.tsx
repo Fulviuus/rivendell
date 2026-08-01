@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { api, errText } from "../api";
 import { renderMarkdown } from "../markdown";
+import { MentionTextarea } from "./MentionTextarea";
 import { useStore } from "../store";
 import {
   ago,
@@ -17,7 +18,7 @@ import {
   VerdictChip,
   agentTone,
 } from "../ui";
-import type { Message, ThreadContextItem, ThreadDetail } from "../types";
+import type { Agent, Message, ThreadContextItem, ThreadDetail } from "../types";
 
 export function ThreadView() {
   const { thread, tags, agents, rooms, roomId, notify, refreshThread } = useStore();
@@ -43,6 +44,9 @@ export function ThreadView() {
   }
 
   const meId = agents.find((a) => a.role === "HUMAN")?.id ?? -1;
+  // Only agents that really exist here get highlighted, matching what the
+  // backend will actually summon.
+  const mentionable = agents.map((a) => ({ name: a.name, color: a.color }));
   // An agent deleted after being mentioned leaves an id with nothing behind it;
   // count those rather than dropping them silently.
   const asked = thread.mentions
@@ -166,7 +170,7 @@ export function ThreadView() {
             className={`prose-msg rounded-xl border-l-2 bg-card p-3.5 shadow-card ring-1 ring-line ${
               agentTone(thread.author_name, thread.author_color).edge
             }`}
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(thread.body) }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(thread.body, mentionable) }}
           />
         </article>
 
@@ -193,6 +197,8 @@ export function ThreadView() {
               key={m.id}
               message={m}
               threadId={thread.id}
+              agents={agents}
+              mentionable={mentionable}
               // You can revise your own words; nobody else's. Rewriting an
               // agent's verdict would make the exported record a fiction.
               editable={m.agent_id === meId}
@@ -211,7 +217,7 @@ export function ThreadView() {
             </div>
             <div
               className="prose-msg"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(thread.resolution_summary) }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(thread.resolution_summary, mentionable) }}
             />
             {thread.export_path && (
               <p className="mt-2 font-mono text-[11px] text-muted">{thread.export_path}</p>
@@ -224,11 +230,12 @@ export function ThreadView() {
 
       {!done && (
         <div className="shrink-0 border-t border-line bg-card px-5 py-3">
-          <Textarea
+          <MentionTextarea
             rows={2}
+            agents={agents}
             value={composing}
-            placeholder="Add what you have learned — assistants see it on their next pass. ⌘↵ to post."
-            onChange={(e) => setComposing(e.target.value)}
+            placeholder="Add what you have learned, or @name an agent to call it in. ⌘↵ to post."
+            onChange={setComposing}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -244,6 +251,8 @@ export function ThreadView() {
               .map((a) => (
                 <button
                   key={a.id}
+                  type="button"
+                  tabIndex={-1}
                   title={`Call ${a.name} into this thread`}
                   onClick={() =>
                     setComposing((c) => (c.endsWith(" ") || !c ? c : c + " ") + `@${a.name} `)
@@ -368,11 +377,15 @@ function ContextBlock({ item }: { item: ThreadContextItem }) {
 function MessageCard({
   message: m,
   threadId,
+  agents,
+  mentionable,
   editable,
   onEdited,
 }: {
   message: Message;
   threadId: number;
+  agents: Agent[];
+  mentionable: { name: string; color: string }[];
   editable: boolean;
   onEdited: () => Promise<void> | void;
 }) {
@@ -441,11 +454,12 @@ function MessageCard({
 
       {editing ? (
         <div className="rounded-xl bg-card p-2.5 shadow-card ring-1 ring-accent/40">
-          <Textarea
+          <MentionTextarea
             autoFocus
+            agents={agents}
             rows={Math.min(16, Math.max(3, draft.split("\n").length + 1))}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={setDraft}
             onKeyDown={(e) => {
               if (e.key === "Escape") setEditing(false);
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -473,7 +487,7 @@ function MessageCard({
           className={`prose-msg rounded-xl border-l-2 p-3.5 shadow-card ring-1 ring-line ${tone.edge} ${
             isAssistant ? `bg-card ${tone.tint}` : "bg-chip/50"
           }`}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(m.body) }}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(m.body, mentionable) }}
         />
       )}
       {m.refs.length > 0 && (
