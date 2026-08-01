@@ -462,24 +462,37 @@ export function Field({
 }
 
 const inputBase =
-  "w-full rounded-lg bg-field text-body px-2.5 py-1.5 ring-1 ring-inset ring-line outline-none placeholder:text-faint focus:ring-2 focus:ring-accent/50";
+  "rounded-lg bg-field text-body px-2.5 py-1.5 ring-1 ring-inset ring-line outline-none placeholder:text-faint focus:ring-2 focus:ring-accent/50";
+
+/**
+ * Tailwind decides which of two conflicting utilities wins by their order in
+ * the generated stylesheet, not by the order they appear in the class
+ * attribute. So a base `w-full` beats a caller's `w-20` or `flex-1` and the
+ * caller silently gets full width — which collapsed the sibling fields in the
+ * context row to nothing. Only apply the default width when the caller has not
+ * asked for one.
+ */
+function sized(className = ""): string {
+  const callerSetsWidth = /(^|\s)(w-|min-w-|max-w-|flex-1|flex-\[|basis-|grow)/.test(className);
+  return `${inputBase} ${callerSetsWidth ? "" : "w-full"} ${className}`;
+}
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`${inputBase} ${props.className ?? ""}`} />;
+  return <input {...props} className={sized(props.className)} />;
 }
 
 export const Textarea = forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
 >(function Textarea(props, ref) {
-  return <textarea {...props} ref={ref} className={`${inputBase} ${props.className ?? ""}`} />;
+  return <textarea {...props} ref={ref} className={sized(props.className)} />;
 });
 
 export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={`${inputBase} appearance-none bg-[length:12px] bg-[right_0.6rem_center] bg-no-repeat pr-8 ${props.className ?? ""}`}
+      className={`${sized(props.className)} appearance-none bg-[length:12px] bg-[right_0.6rem_center] bg-no-repeat pr-8`}
       style={{
         backgroundImage:
           "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%236c7488' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E\")",

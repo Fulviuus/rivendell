@@ -29,6 +29,8 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
   const tag = useMemo(() => tags.find((t) => t.key === tagKey), [tags, tagKey]);
   const assistants = agents.filter((a) => a.role === "ASSISTANT" && !a.revoked_at);
+  // Who @-completion can actually offer: anyone here but you.
+  const mentionable = agents.filter((a) => a.role !== "HUMAN" && !a.revoked_at);
 
   useEffect(() => {
     if (!tagKey && tags.length) setTagKey(tags[0].key);
@@ -123,7 +125,10 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        <Field label="The ask" hint="markdown · @name to address an agent">
+        <Field
+          label="The ask"
+          hint={mentionable.length ? "markdown · type @ to call an agent in" : "markdown"}
+        >
           <MentionTextarea
             rows={7}
             agents={agents}
@@ -135,7 +140,10 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           />
         </Field>
 
-        <Field label="Context" hint="snapshotted now, so the review stays valid as you keep working">
+        <Field
+          label="Code to review"
+          hint="copied now, so it still matches the question after you keep working"
+        >
           <div className="space-y-2">
             {git?.is_repo && (
               <label className="flex items-center gap-2 text-[12.5px] text-soft">
@@ -152,13 +160,22 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
               </label>
             )}
 
+            {attachments.length > 0 && (
+              <div className="flex gap-1.5 px-0.5 text-[11px] text-faint">
+                <span className="flex-1">file — start typing to search the project</span>
+                <span className="w-20">first line</span>
+                <span className="w-20">last line</span>
+                <span className="w-7" />
+              </div>
+            )}
             {attachments.map((a, i) => (
               <div key={i} className="flex gap-1.5">
                 <Input
                   list="project-files"
                   value={a.path}
+                  autoFocus={!a.path}
                   placeholder="src/auth/token.ts"
-                  className="flex-1 font-mono !text-[12px]"
+                  className="min-w-0 flex-1 font-mono !text-[12px]"
                   onChange={(e) =>
                     setAttachments(
                       attachments.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)),
@@ -167,7 +184,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
                 />
                 <Input
                   value={a.start}
-                  placeholder="from"
+                  placeholder="whole file"
                   className="w-20 !text-[12px]"
                   onChange={(e) =>
                     setAttachments(
@@ -177,7 +194,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
                 />
                 <Input
                   value={a.end}
-                  placeholder="to"
+                  placeholder="whole file"
                   className="w-20 !text-[12px]"
                   onChange={(e) =>
                     setAttachments(
@@ -212,7 +229,16 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
         </Field>
 
         <div className="grid grid-cols-1 gap-3">
-          <Field label="Ask" hint={mentions.length ? "" : "everyone in the room"}>
+          <Field
+            label="Address to"
+            hint={
+              assistants.length === 0
+                ? "no assistants here yet — add one in project settings"
+                : mentions.length
+                  ? "only these agents will see it"
+                  : "left empty, every assistant in the room sees it"
+            }
+          >
             <div className="max-h-28 space-y-1 overflow-y-auto rounded-lg bg-field p-2 ring-1 ring-inset ring-line">
               {assistants.length === 0 && (
                 <p className="px-1 py-0.5 text-[12px] text-faint">No assistants in this room.</p>
