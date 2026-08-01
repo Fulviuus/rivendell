@@ -1245,6 +1245,80 @@ async fn rooms_are_isolated() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// A thread opened before the watcher existed still gets answered.
+///
+/// This is the failure that looks exactly like a broken feature from outside:
+/// the agent is awake, the thread is open and waiting, and nothing ever
+/// happens — because the watcher only ever looked forward from its own start.
+/// Work does not stop existing because nobody was listening when it arrived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn work_already_waiting_is_picked_up_on_startup() {
+    let watcher = std::path::Path::new("../runner/target/release/rivendell-run");
+    if !watcher.is_file() {
+        eprintln!("skipped: build it with `cargo build --release --manifest-path runner/Cargo.toml`");
+        return;
+    }
+
+    let h = boot("catchup").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (scout, _k) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    // Opened first, with nothing watching. This is the whole point.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "Opened while nobody was watching", "body": "well?", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "could not open the thread: {text}");
+
+    let log = h.dir.join("ran.txt");
+    let script = h.dir.join("fake-agent");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'threads=%s\\n' \"$RIVENDELL_THREADS\" >> {}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (token, handle) = h.store.mint_live_token(scout).unwrap();
+    let mut child = std::process::Command::new(watcher)
+        .args(["--key", &token, "--url", &h.url, "--wait", "20", "--once", "--"])
+        .arg(&script)
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("the watcher ignored a thread that was already waiting for it");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(ran.contains("threads="), "the agent never ran — log was {ran:?}");
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// The whole chain, with nothing faked but the agent itself: the app mints a
 /// credential, the real watcher authenticates with it, holds the long poll,
 /// and starts the agent when somebody else moves a thread.

@@ -1010,6 +1010,42 @@ impl Store {
         Ok(out)
     }
 
+    /// Open threads already waiting on this agent, for a watcher that has just
+    /// come up.
+    ///
+    /// Work does not stop existing because nobody was listening when it
+    /// arrived. A watcher that only reacted to events after its own start would
+    /// ignore a thread opened while the app was closed — for ever, or until
+    /// somebody happened to post again.
+    ///
+    /// "Waiting on this agent" means the newest thing said is not its own: a
+    /// thread it has already answered is the coder's turn, not another prompt
+    /// to answer twice.
+    pub fn wakeable_open_threads(&self, agent_id: i64) -> Result<Vec<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT t.id
+             FROM threads t
+             JOIN rooms r ON r.id=t.room_id
+             JOIN room_members m ON m.room_id=t.room_id AND m.agent_id=?1
+             WHERE t.status NOT IN ('RESOLVED','WONTFIX')
+               AND r.paused=0
+               AND COALESCE(
+                     (SELECT agent_id FROM messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1),
+                     t.author_agent_id
+                   ) <> ?1
+               AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id AND agent_id=?1)
+                     < r.max_replies_per_agent
+               AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id)
+                     < r.max_thread_messages
+             ORDER BY t.id",
+        )?;
+        let out = stmt
+            .query_map(params![agent_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
     /// How to start an agent, or why it cannot be started.
     pub fn launch_plan(&self, agent_id: i64) -> Result<LaunchPlan> {
         let conn = self.lock();

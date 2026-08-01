@@ -230,6 +230,9 @@ case "${1:-run}" in
     bold "TypeScript"
     npx tsc --noEmit
     info "clean"
+    # One end-to-end test drives the real watcher binary, so build it first —
+    # otherwise a stale one silently decides whether the suite passes.
+    build_watcher
     bold "Rust"
     cargo test --manifest-path src-tauri/Cargo.toml
     bold "Runner"

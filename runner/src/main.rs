@@ -98,46 +98,55 @@ fn main() {
         }
     );
 
-    // Start from now: a fresh runner should react to what happens next, not
-    // replay a backlog it was never running for.
-    let mut cursor = match call(
+    // Ask what is already waiting, and take a cursor so what comes next is not
+    // replayed from the beginning of time. A watcher that only looked forward
+    // would ignore a thread opened while nobody was watching — which is exactly
+    // when one is most likely to have been opened.
+    let first = call(
         &agent,
         &cfg,
         "wait_for_updates",
-        serde_json::json!({"timeout_s": 1, "watcher": true}),
-    )
-    {
+        serde_json::json!({"timeout_s": 1, "watcher": true, "catch_up": true}),
+    );
+    let mut cursor = match &first {
         Ok(v) => v["next_cursor"].as_i64().unwrap_or(0),
         Err(e) => {
-            eprintln!("rivendell-run: could not read the cursor ({e}) — starting from the top");
+            eprintln!("rivendell-run: could not reach Rivendell ({e}) — retrying");
             0
         }
     };
+    let mut pending = first.ok();
 
     report(&cfg, serde_json::json!({ "state": "waiting", "agent": name }));
     let mut recent: Vec<Instant> = Vec::new();
 
     loop {
-        let res = call(
-            &agent,
-            &cfg,
-            "wait_for_updates",
-            serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait, "watcher": true }),
-        );
-        let v = match res {
-            Ok(v) => v,
-            Err(e) => {
-                // The app restarting is normal; keep the watch alive.
-                eprintln!("rivendell-run: {e} — retrying in 5s");
-                std::thread::sleep(Duration::from_secs(5));
-                continue;
-            }
+        // The catch-up answer is not a wake-up: if it found nothing, there is
+        // nothing to have handled, and --once must still wait for one.
+        let from_catch_up = pending.is_some();
+        // The catch-up answer, first time round; a fresh poll after that.
+        let v = match pending.take() {
+            Some(v) => v,
+            None => match call(
+                &agent,
+                &cfg,
+                "wait_for_updates",
+                serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait, "watcher": true }),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    // The app restarting is normal; keep the watch alive.
+                    eprintln!("rivendell-run: {e} — retrying in 5s");
+                    std::thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            },
         };
         cursor = v["next_cursor"].as_i64().unwrap_or(cursor);
 
         let threads = threads_needing_me(&v, my_id);
         if threads.is_empty() {
-            if cfg.once {
+            if cfg.once && !from_catch_up {
                 return;
             }
             continue;

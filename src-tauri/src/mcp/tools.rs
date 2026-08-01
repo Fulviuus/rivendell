@@ -553,6 +553,21 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
         None => store.latest_seq()?,
     };
 
+    // A watcher coming up asks what is already waiting. Reacting only to
+    // what happens next would mean a thread opened while the app was closed
+    // is never answered — the agent looks asleep for a reason nobody can see.
+    if args.get("catch_up").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let waiting = store.wakeable_open_threads(ctx.id)?;
+        if !waiting.is_empty() {
+            return Ok(serde_json::to_string_pretty(&json!({
+                "next_cursor": cursor,
+                "events": [],
+                "needs_you": waiting,
+                "then": "These were already open and waiting for you when you started.",
+            }))?);
+        }
+    }
+
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     loop {
         // Re-read each time round: rooms can be joined or left while we wait,
@@ -619,7 +634,9 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
             return Ok(serde_json::to_string_pretty(&json!({
                 "next_cursor": cursor,
                 "events": [],
-                "note": if ctx.supervised {
+                "note": if is_watcher {
+                    "Nothing new. Call again with this next_cursor."
+                } else if ctx.supervised {
                     "Nothing new. You were started for work already named in your instructions \
                      — finish that and exit rather than waiting here."
                 } else {
