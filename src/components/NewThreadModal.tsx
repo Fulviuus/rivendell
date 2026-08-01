@@ -25,6 +25,10 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
   const [git, setGit] = useState<{ is_repo: boolean; branch: string | null; dirty: boolean } | null>(
     null,
   );
+  // Agents live in rooms, not projects. When this room has none it is almost
+  // always because they are in a sibling room, so say which — telling someone
+  // "no assistants here" without that is just restating the problem.
+  const [elsewhere, setElsewhere] = useState<{ room: string; names: string[] }[]>([]);
   const [busy, setBusy] = useState(false);
 
   const tag = useMemo(() => tags.find((t) => t.key === tagKey), [tags, tagKey]);
@@ -39,6 +43,22 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (roomId === null) return;
     api.listProjectFiles(roomId).then(setFiles).catch(() => setFiles([]));
+    api
+      .listAgents()
+      .then((all) => {
+        const siblings = rooms.filter((r) => r.project_id === room?.project_id && r.id !== roomId);
+        setElsewhere(
+          siblings
+            .map((r) => ({
+              room: r.name,
+              names: all
+                .filter((a) => a.room_id === r.id && a.role === "ASSISTANT" && !a.revoked_at)
+                .map((a) => a.name),
+            }))
+            .filter((r) => r.names.length > 0),
+        );
+      })
+      .catch(() => setElsewhere([]));
     api
       .gitStatus(roomId)
       .then((g) => {
@@ -78,6 +98,13 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
       setBusy(false);
     }
   }
+
+  const nowhereHint =
+    elsewhere.length === 0
+      ? `no assistants in #${room?.name ?? "this room"} — add one in project settings`
+      : `none in #${room?.name} · ${elsewhere
+          .map((e) => `${e.names.join(" and ")} are in #${e.room}`)
+          .join(", ")}`;
 
   return (
     <Modal
@@ -233,7 +260,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
             label="Address to"
             hint={
               assistants.length === 0
-                ? "no assistants here yet — add one in project settings"
+                ? nowhereHint
                 : mentions.length
                   ? "only these agents will see it"
                   : "left empty, every assistant in the room sees it"
@@ -241,7 +268,11 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
           >
             <div className="max-h-28 space-y-1 overflow-y-auto rounded-lg bg-field p-2 ring-1 ring-inset ring-line">
               {assistants.length === 0 && (
-                <p className="px-1 py-0.5 text-[12px] text-faint">No assistants in this room.</p>
+                <p className="px-1 py-0.5 text-[12px] leading-relaxed text-faint">
+                  {elsewhere.length === 0
+                    ? "None here. Add one from the project gear in the sidebar."
+                    : `An agent belongs to one room. Open this thread in #${elsewhere[0].room} instead, or add an assistant to #${room?.name} from the project gear.`}
+                </p>
               )}
               {assistants.map((a) => (
                 <label key={a.id} className="flex items-center gap-2 text-[12.5px] text-soft">
