@@ -188,8 +188,13 @@ impl Store {
     }
 
     fn publish(&self, notice: EventNotice) {
-        // Errors only mean "nobody is listening", which is normal at startup.
-        let _ = self.events.send(notice);
+        // The count is how many long polls are about to be woken. A zero here
+        // while an agent is supposedly waiting is the whole answer to "why did
+        // nothing happen", and it is invisible without saying it.
+        match self.events.send(notice.clone()) {
+            Ok(n) => tracing::info!("event {} {} -> {n} listener(s)", notice.seq, notice.kind),
+            Err(_) => tracing::info!("event {} {} -> nobody listening", notice.seq, notice.kind),
+        }
     }
 
     pub fn latest_seq(&self) -> Result<i64> {

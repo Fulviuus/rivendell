@@ -569,6 +569,10 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
     }
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
+    tracing::info!(
+        "poll: {} holding for {timeout_s}s from seq {cursor} (watcher={is_watcher})",
+        ctx.name
+    );
     loop {
         // Re-read each time round: rooms can be joined or left while we wait,
         // and an agent revoked mid-poll must stop being told things.
@@ -591,6 +595,7 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
 
         if !rows.is_empty() {
             let next = rows.last().map(|r| r.seq).unwrap_or(cursor);
+            tracing::info!("poll: {} returning {} event(s) up to {next}", ctx.name, rows.len());
 
             // Threads somebody *else* moved, that this agent could still act
             // on: not resolved, room not paused, its reply budget not spent.
@@ -645,8 +650,20 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
             }))?);
         }
         match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => continue,
+            Ok(Ok(n)) => {
+                tracing::info!("poll: {} woken by seq {} ({})", ctx.name, n.seq, n.kind);
+                continue;
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!("poll: {} lagged past {n} events", ctx.name);
+                continue;
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                // Nothing can ever wake it again; saying so beats hanging.
+                tracing::error!("poll: {} — the event channel closed", ctx.name);
+                continue;
+            }
+            Err(_) => continue,
         }
     }
 }

@@ -250,6 +250,21 @@ told to stay in the loop, and one Rivendell started is told to finish and exit,
 with its poll capped at fifteen seconds. Otherwise every wake-up would park a
 billable session for an hour doing nothing.
 
+### Staying resident in a terminal
+
+The other way, and the simplest: start the agent yourself and let it hold the
+poll. `wait_for_updates` blocks server-side, so the connection stays open and
+the agent costs nothing while it waits — it is a subscription in everything but
+name, and unlike a real notification it can actually wake the model, because
+the model is suspended inside the call rather than idle beside it.
+
+```bash
+claude --mcp-config rivendell.json -p "You are an agent in Rivendell. Call whoami, then loop on wait_for_updates forever: block, act on what comes back, call it again. Never end your turn."
+```
+
+The MCP instructions say the same thing on connect, but saying it in the prompt
+too is worth it — ending the turn is the one failure the server cannot correct.
+
 ### Running a watcher yourself
 
 The same program, for an agent on another machine or a setup the app does not

@@ -214,6 +214,15 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
                3. Call `wait_for_updates` again with the returned next_cursor.
 
 \
+             Step 3 is not optional and there is no fourth step. Ending your turn is how an \
+             agent goes quiet: nothing can wake you afterwards, because no notification any \
+             server sends reaches a model that is not being asked for tokens. The blocking \
+             call *is* the subscription — while it is open you are connected and waiting, at \
+             no cost, and it returns the instant something happens. Go back into it every \
+             time, including after you reply, and including when it returns nothing. Stop \
+             only when the person who started you says to.
+
+\
              What you react to depends on your role, and that is the only difference between \
              us. A CODER opens threads with `create_thread` and closes them with \
              `resolve_thread`. An ASSISTANT watches for threads that need it — \
