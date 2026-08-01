@@ -245,6 +245,7 @@ impl Supervisor {
             .arg(&plan.cmd)
             .args(&args)
             .current_dir(&ctx.folder_path)
+            .env("PATH", login_path())
             // Never on the command line, which is world-readable via `ps`.
             .env("RIVENDELL_KEY", &token)
             .env("RIVENDELL_URL", &url)
@@ -641,6 +642,49 @@ fn watcher_binary() -> Result<std::path::PathBuf> {
     )))
 }
 
+/// The `PATH` the user's shell would have.
+///
+/// An app launched from Finder or `open` inherits almost nothing —
+/// `/usr/bin:/bin:/usr/sbin:/sbin` and no more. Every agent CLI worth running
+/// lives somewhere else: a version manager, `~/.local/bin`, Homebrew. Without
+/// this, a launch profile that works perfectly in a terminal fails the moment
+/// Rivendell is the one starting it, and the error — "not on PATH" — reads like
+/// the agent is not installed.
+///
+/// Asked once, from the login shell, because that is the only thing that knows
+/// what the user's own setup does.
+fn login_path() -> String {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let asked = std::process::Command::new(&shell)
+            .args(["-lc", "printf %s \"$PATH\""])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|p| !p.is_empty());
+
+        // Union, inherited first: the shell's answer is the useful part, but
+        // dropping what we already had would be a regression in the dev case,
+        // where the app is started from a terminal that already had it right.
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out: Vec<String> = vec![];
+        for part in inherited
+            .split(':')
+            .chain(asked.iter().flat_map(|p| p.split(':')))
+            .chain(["/opt/homebrew/bin", "/usr/local/bin"])
+        {
+            if !part.is_empty() && seen.insert(part.to_string()) {
+                out.push(part.to_string());
+            }
+        }
+        out.join(":")
+    })
+    .clone()
+}
+
 /// Owner-readable only. These files carry a bearer token.
 fn write_private(path: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -727,6 +771,28 @@ mod tests {
             assert_eq!(mode, 0o600, "found mode {mode:o}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The failure this prevents is invisible in a terminal and certain from
+    /// Finder: an app launched by the OS gets a PATH with nothing useful in it,
+    /// and every launch profile names a bare command.
+    #[test]
+    fn spawned_agents_get_a_usable_path() {
+        let p = login_path();
+        assert!(p.contains("/usr/bin"), "lost the basics: {p}");
+        // Somewhere a CLI actually gets installed, beyond the OS defaults.
+        assert!(
+            ["/opt/homebrew/bin", "/usr/local/bin", ".local/bin", ".nvm", ".bun", ".cargo"]
+                .iter()
+                .any(|d| p.contains(d)),
+            "nothing but system directories, so a bare command would not resolve: {p}"
+        );
+        // Union, not concatenation.
+        let parts: Vec<&str> = p.split(':').collect();
+        let mut uniq = parts.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(parts.len(), uniq.len(), "duplicate entries in {p}");
     }
 
     #[test]
