@@ -100,10 +100,18 @@ fn main() {
 
     // Start from now: a fresh runner should react to what happens next, not
     // replay a backlog it was never running for.
-    let mut cursor = match call(&agent, &cfg, "wait_for_updates", serde_json::json!({"timeout_s": 1}))
+    let mut cursor = match call(
+        &agent,
+        &cfg,
+        "wait_for_updates",
+        serde_json::json!({"timeout_s": 1, "watcher": true}),
+    )
     {
         Ok(v) => v["next_cursor"].as_i64().unwrap_or(0),
-        Err(_) => 0,
+        Err(e) => {
+            eprintln!("rivendell-run: could not read the cursor ({e}) — starting from the top");
+            0
+        }
     };
 
     report(&cfg, serde_json::json!({ "state": "waiting", "agent": name }));
@@ -114,7 +122,7 @@ fn main() {
             &agent,
             &cfg,
             "wait_for_updates",
-            serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait }),
+            serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait, "watcher": true }),
         );
         let v = match res {
             Ok(v) => v,

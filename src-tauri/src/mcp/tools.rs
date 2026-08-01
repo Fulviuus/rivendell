@@ -534,7 +534,12 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
     // the whole time it sits here. Parking it for an hour would turn one
     // wake-up into an hour-long session that answers nothing, so it gets long
     // enough to catch a reply that is already on its way and no longer.
-    let ceiling = if ctx.supervised { 15 } else { 3600 };
+    // A watcher is supervised too, but holding the poll is the whole of its
+    // job — clamping it would turn one blocked socket into a poll every
+    // fifteen seconds for ever. It says which it is, because they share a
+    // credential and nothing else can tell them apart.
+    let is_watcher = args.get("watcher").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ceiling = if ctx.supervised && !is_watcher { 15 } else { 3600 };
     let timeout_s = args
         .get("timeout_s")
         .and_then(|v| v.as_i64())

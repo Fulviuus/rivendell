@@ -313,7 +313,7 @@ impl Supervisor {
             tauri::async_runtime::spawn(async move {
                 let mut lines = BufReader::new(err).lines();
                 while let Ok(Some(l)) = lines.next_line().await {
-                    tracing::debug!("{name}: {l}");
+                    tracing::info!("{name}: {l}");
                     let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
                     t.push_str(&l);
                     t.push('\n');
@@ -348,8 +348,10 @@ impl Supervisor {
     /// One line of the watcher's state feed.
     fn observe(&self, agent_id: i64, line: &str) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            tracing::info!("agent {agent_id} watcher said: {line}");
             return;
         };
+        tracing::info!("agent {agent_id}: {}", v["state"].as_str().unwrap_or("?"));
         let mut agents = self.agents();
         let Some(st) = agents.get_mut(&agent_id) else { return };
         match v["state"].as_str() {
