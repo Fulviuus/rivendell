@@ -44,6 +44,30 @@ preflight() {
   fi
 }
 
+# The watcher is a separate program that holds the long poll for an awake
+# agent. awake.rs looks for it beside the app's own binary, so it is copied
+# there rather than declared in externalBin — that would make it a *build-time*
+# requirement, and `cargo test` would fail on a checkout that has not built it.
+build_watcher() {
+  bold "Building the watcher"
+  cargo build --release --manifest-path runner/Cargo.toml
+}
+
+# Both places the app can be run from: the dev binary and the bundle.
+install_watcher() {
+  local src="runner/target/release/rivendell-run" n=0
+  [ -x "$src" ] || die "the watcher was not built — run './rivendell.sh' rather than tauri directly"
+  for dir in src-tauri/target/debug src-tauri/target/release \
+             "src-tauri/target/debug/${BUNDLE_REL}/Contents/MacOS" \
+             "src-tauri/target/release/${BUNDLE_REL}/Contents/MacOS"; do
+    if [ -d "$dir" ]; then
+      cp "$src" "$dir/rivendell-run"
+      n=$((n + 1))
+    fi
+  done
+  info "watcher installed in ${n} place(s)"
+}
+
 wait_gone() {
   local pattern="$1"
   for _ in $(seq 1 40); do
@@ -153,7 +177,10 @@ launch() {
 case "${1:-run}" in
   dev)
     preflight
+    build_watcher
     stop_running
+    # Before tauri starts it: the dev binary looks beside itself.
+    mkdir -p src-tauri/target/debug && install_watcher
     bold "Starting with hot reload — ctrl-c to stop"
     info "the Rust side rebuilds on change; the UI reloads instantly"
     exec npm run tauri dev
@@ -161,24 +188,30 @@ case "${1:-run}" in
 
   run)
     preflight
+    build_watcher
     bold "Building ${APP_NAME} (debug)"
     npm run tauri build -- --debug --bundles app
+    install_watcher
     stop_running
     launch "src-tauri/target/debug/${BUNDLE_REL}"
     ;;
 
   release)
     preflight
+    build_watcher
     bold "Building ${APP_NAME} (release — slower, optimised)"
     npm run tauri build -- --bundles app
+    install_watcher
     stop_running
     launch "src-tauri/target/release/${BUNDLE_REL}"
     ;;
 
   dmg)
     preflight
+    build_watcher
     bold "Building ${APP_NAME} and packaging a .dmg"
     npm run tauri build -- --bundles app,dmg
+    install_watcher
     dmg=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -maxdepth 1 2>/dev/null | head -1)
     [ -n "$dmg" ] || die "no .dmg was produced"
     bold "Packaged"

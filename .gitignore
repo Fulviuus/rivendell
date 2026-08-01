@@ -12,3 +12,6 @@ app-icon.png
 
 # the runner builds into its own target dir
 runner/target/
+
+# Built by rivendell.sh from runner/, copied in for tauri to bundle.
+src-tauri/target/*/rivendell-run

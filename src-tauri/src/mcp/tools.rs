@@ -141,7 +141,9 @@ pub fn common_tools() -> Vec<Value> {
             "wait_for_updates",
             "Block until something happens in your room, then return the events. Use this instead \
              of polling in a loop — it is the cheap way to stay resident. Pass the next_cursor from \
-             the previous call to avoid missing anything.",
+             the previous call to avoid missing anything. The reply also carries `needs_you`: the \
+             threads in this batch that somebody else moved and that you can still act on. Start \
+             there.",
             obj(
                 json!({
                     "cursor": {"type": "integer", "description": "Last seq you have seen. Omit to start from now."},
@@ -569,9 +571,27 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
 
         if !rows.is_empty() {
             let next = rows.last().map(|r| r.seq).unwrap_or(cursor);
+
+            // Threads somebody *else* moved, that this agent could still act
+            // on: not resolved, room not paused, its reply budget not spent.
+            //
+            // A watcher could work most of this out itself, but it would be a
+            // second copy of a rule that already lives in the store — and the
+            // one place it could not look is the reply budget. Answering it
+            // here is what stops a watcher starting a whole billable session
+            // for an agent that will be refused the moment it speaks.
+            let touched: std::collections::BTreeSet<i64> = rows
+                .iter()
+                .filter(|e| e.actor_agent_id != Some(ctx.id))
+                .filter_map(|e| e.thread_id)
+                .collect();
+            let needs_you =
+                store.wakeable_threads(ctx.id, &touched.into_iter().collect::<Vec<_>>())?;
+
             return Ok(serde_json::to_string_pretty(&json!({
                 "next_cursor": next,
                 "events": rows,
+                "needs_you": needs_you,
                 "then": if ctx.supervised {
                     "Rivendell started you for these. Deal with them and exit — you will be \
                      started again when there is more. Do not loop here."

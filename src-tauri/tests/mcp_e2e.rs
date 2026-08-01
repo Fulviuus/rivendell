@@ -1245,6 +1245,98 @@ async fn rooms_are_isolated() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// The whole chain, with nothing faked but the agent itself: the app mints a
+/// credential, the real watcher authenticates with it, holds the long poll,
+/// and starts the agent when somebody else moves a thread.
+///
+/// Every piece here is unit-tested on its own. This is the one test that proves
+/// they are wired to each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_watcher_starts_an_agent_when_a_thread_moves() {
+    let watcher = std::path::Path::new("../runner/target/release/rivendell-run");
+    if !watcher.is_file() {
+        eprintln!("skipped: build it with `cargo build --release --manifest-path runner/Cargo.toml`");
+        return;
+    }
+
+    let h = boot("watcher").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (scout, _k) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    // Stands in for the agent CLI. It records that it ran and with what.
+    let log = h.dir.join("ran.txt");
+    let script = h.dir.join("fake-agent");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'threads=%s key=%.8s\\n' \"$RIVENDELL_THREADS\" \"$RIVENDELL_KEY\" >> {}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Exactly what the supervisor hands it: an ephemeral credential, never the
+    // agent's own key — which the app could not read back if it wanted to.
+    let (token, handle) = h.store.mint_live_token(scout).unwrap();
+    let mut child = std::process::Command::new(watcher)
+        .args(["--key", &token, "--url", &h.url, "--wait", "20", "--once", "--"])
+        .arg(&script)
+        .spawn()
+        .unwrap();
+
+    // Let it authenticate and prime its cursor before there is anything to see,
+    // so what it reacts to is genuinely new.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({
+            "title": "The retry loop never backs off",
+            "body": "Third attempt fires immediately.",
+            "tag": "HELP_REQUEST"
+        }),
+    );
+    assert!(!is_err, "could not open the thread: {text}");
+
+    // Generous: it has to notice, start a process, and wait for it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("the watcher never started the agent");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        ran.contains("threads="),
+        "the agent did not run — log was {ran:?}"
+    );
+    assert!(
+        ran.contains("key=rvdlive"),
+        "it should hold the ephemeral credential, not a stored key: {ran:?}"
+    );
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_supervised_run_authenticates_and_can_be_cut_off() {
     let h = boot("live-token").await;

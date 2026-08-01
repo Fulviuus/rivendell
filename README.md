@@ -200,48 +200,60 @@ and stopped, and none of MCP fixes that — a server can notify the host, but th
 is no primitive that puts a token into an idle model's context. Something outside
 the model has to start it.
 
-So the waiting happens somewhere that cannot forget. There are two, and they
-differ only in who runs them.
-
-### The switch in the app
-
-Each agent has a **Keep awake** switch, in room settings and in project settings.
-Turn it on and Rivendell starts that agent itself whenever a thread moves in a
-room it has joined — reading its launch profile for the command, and handing it a
-prompt that already names the threads.
+So the waiting happens in a program that cannot forget. `runner/` — the
+**watcher** — has no LLM in it: it holds the long poll, and when something lands
+that concerns its agent it starts that agent once, with the thread ids already in
+the prompt. While the room is quiet it costs nothing at all: no tokens, no
+requests, one blocked socket.
 
 It never contacts a running agent, because there is nothing to contact. It starts
 a fresh one. The thread history is the context, so the new process picks up where
-the last stopped. That also means an awake agent should not also be run by hand:
-two processes holding one identity both work, and both bill.
+the last stopped.
 
-The rails, in the order they bite:
+### The switch
+
+Each agent has a **Keep awake** switch, in room settings and in project settings.
+Turn it on and Rivendell runs a watcher for that agent, restarting it if it dies
+and stopping it when you switch off.
+
+That division is the whole design. Deciding *when* an agent should run is the
+watcher's job and happens outside the app; the app only does the two things
+nothing else can — owning process lifetime, and issuing a credential. Rivendell
+had an in-process spawner once and deleted it, on the grounds that a process
+supervisor keyed on thread state was more complexity than the event log needed.
+That verdict still holds, so this is not one.
+
+An awake agent should not also be run by hand: two processes holding one identity
+both work, and both bill.
+
+### What stops it running away
 
 - **Its own events never wake it.** Otherwise a reply wakes its author, who
   replies, for ever.
-- **One process at a time per agent**, and a burst of replies is one wake-up.
-- **Only threads it could still act on** — not resolved, room not paused, its
-  reply budget not spent. Starting a session to discover it may not speak is a
-  full billable run for nothing.
-- **Twenty minutes** and the run is killed.
-- **Three failures running** and the agent goes back to sleep with the reason on
-  screen, rather than retrying a broken command for ever.
-- **Forty starts in an hour** and it goes to sleep too. That is not a throttle:
-  something looping at that rate needs a person to look at it.
+- **One agent process at a time**, and a burst of replies is one wake-up.
+- **Only threads it could still act on.** `wait_for_updates` answers this
+  itself, in `needs_you` — it knows about resolved threads, paused rooms and
+  spent reply budgets, and a watcher does not. Starting a session to discover it
+  may not speak is a full billable run for nothing.
+- **Twenty minutes** and the agent run is killed.
+- **Forty starts in an hour** and the watcher stops and says so. Not a throttle:
+  a throttle would still bill forty sessions an hour all night. Something
+  looping at that rate needs a person to look at it.
+- **Three failed restarts** and the agent goes back to sleep with the reason on
+  screen, rather than respawning a broken command for ever.
 - **Assistants never inherit `acceptEdits`.** Only a coder runs with permission
   to change files, and enabling one says so first.
 
-Nothing here is left to a prompt. `wait_for_updates` even changes its advice
-depending on who is asking: a session you started yourself is told to stay in the
-loop, and one Rivendell started is told to finish and exit, with its poll capped
-at fifteen seconds. Otherwise every wake-up would park a billable session for an
-hour doing nothing.
+Almost none of that is left to a prompt. The one part that is — `wait_for_updates`
+changes its advice depending on who is asking: a session you started yourself is
+told to stay in the loop, and one Rivendell started is told to finish and exit,
+with its poll capped at fifteen seconds. Otherwise every wake-up would park a
+billable session for an hour doing nothing.
 
-### The same thing, outside the app
+### Running a watcher yourself
 
-`runner/` is that loop as a standalone program with no LLM in it, for agents on
-another machine or a setup the app does not know about. It holds the long poll
-open and runs your command when something lands.
+The same program, for an agent on another machine or a setup the app does not
+know about:
 
 ```bash
 cargo build --release --manifest-path runner/Cargo.toml
@@ -254,23 +266,20 @@ RIVENDELL_KEY=rvd_... runner/target/release/rivendell-run -- claude -p "{prompt}
 `{prompt}` becomes an instruction naming the threads that changed; `{threads}`
 is the bare ids. `RIVENDELL_URL`, `RIVENDELL_KEY` and `RIVENDELL_THREADS` are in
 the command's environment too, so the session it starts is already authenticated
-against the same agent. `--once` handles a single wake-up and exits, which is the
-easy way to watch it work.
-
-The same self-filter applies, `--limit` kills a run that will not finish, and
-while the room is quiet it costs nothing at all: no tokens, no requests, one
-blocked socket.
+as the same agent. `--once` handles a single wake-up and exits, which is the easy
+way to watch it work; `--ceiling`, `--limit` and `--wait` are the rails above.
 
 ### What Rivendell starts, Rivendell stops
 
 An agent's key is unrecoverable — only its digest was ever stored — so the app
-cannot hand its own key to anything. It mints a separate credential per run,
-held in memory, dropped when the process ends, pinned to the agent that existed
-when it was minted. Revoking, rotating or deleting an agent cuts off a run
-already in flight.
+cannot hand its own key to anything. It mints a separate credential per watcher,
+held in memory, dropped when the process ends, and pinned to the agent that
+existed when it was minted: `agents.id` is a bare rowid and deletion is real, so
+a token remembering only the number could come back as whoever inherits it.
+Revoking, rotating or deleting an agent cuts off a watcher already running.
 
-Children run in their own process groups, which is what lets one signal reach
-the whole tree an agent CLI spawns. Killing them happens three ways, because no
+The watcher leads its own process group and the agent it starts inherits it,
+which is what lets one signal reach the whole tree. Killing them happens three ways, because no
 one of them is enough: on an orderly quit, from `rivendell.sh` (which kills the
 app outright and so skips the first), and from a record on disk swept at the
 next launch. That last one is the only leg that survives a Force Quit — macOS
@@ -324,10 +333,11 @@ src-tauri/src/
   db.rs               schema, seeds for tags and launch profiles
   mcp/server.rs       streamable-HTTP JSON-RPC, bearer auth
   mcp/tools.rs        the tool surface agents see
+  awake.rs            keeps a watcher running per awake agent
   fsjail.rs           read-only path jail
   export.rs           decision records
 mcp-shim/             standalone stdio↔HTTP bridge
-runner/               wakes an idle agent when its rooms need it
+runner/               the watcher: holds the poll, starts the agent
 ```
 
 ## Icons
@@ -353,6 +363,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```bash
 cargo test --manifest-path runner/Cargo.toml
 ```
+
+One test spans both: it runs the real watcher against the real server and checks
+that a thread opened by somebody else starts the agent, holding an ephemeral
+credential. It skips itself if the watcher has not been built.
 
 Covers the path jail (traversal, secrets, `.git`), key handling, git rev
 injection, and a full end-to-end pass over real HTTP: auth, role-scoped tool

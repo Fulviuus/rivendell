@@ -177,25 +177,38 @@ export function AgentRoster({
   );
 }
 
-/** Running now, waiting to run, or just awake. */
+/** Running now, watching, or something is wrong. */
 function AwakeDot({ agent }: { agent: Agent }) {
   const live = useStore((s) => s.awake[agent.id]);
   const running = live?.running ?? false;
+  const watching = live?.watching ?? false;
   const trouble = live?.trouble;
 
-  const tone = trouble ? "bg-rose-500" : running ? "bg-emerald-500" : "bg-emerald-500/50";
+  // Awake in the database but with no watcher up means it is on its way, or it
+  // failed — and the two look identical for about a second, so neither claims
+  // more than it knows.
+  const tone = trouble
+    ? "bg-rose-500"
+    : running
+      ? "bg-emerald-500"
+      : watching
+        ? "bg-emerald-500/50"
+        : "bg-amber-500/60";
+  const word = trouble ? "stopped" : running ? "running" : watching ? "awake" : "starting";
   const said = trouble
     ? trouble
     : running
-      ? "Running now."
-      : live?.last_outcome
-        ? `Awake. Last run ${live.last_outcome}.`
-        : "Awake, waiting for something to happen.";
+      ? live?.threads?.length
+        ? `Running now, on ${live.threads.map((t) => `#${t}`).join(", ")}.`
+        : "Running now."
+      : watching
+        ? "Awake, waiting for something to happen."
+        : "Starting its watcher.";
 
   return (
     <span className="flex items-center gap-1 text-[11px] text-muted" title={said}>
       <span className={`h-1.5 w-1.5 rounded-full ${tone} ${running ? "pulse-soft" : ""}`} />
-      {running ? "running" : "awake"}
+      {word}
     </span>
   );
 }

@@ -69,10 +69,12 @@ export interface Agent {
 /** Live run state for an awake agent. Not persisted — it dies with the app. */
 export interface AwakeStatus {
   agent_id: number;
+  /** A watcher is up and holding the long poll. */
+  watching: boolean;
+  /** The agent itself is running right now. */
   running: boolean;
-  waiting: number;
+  threads: number[];
   last_run_at: string | null;
-  last_outcome: string | null;
   trouble: string | null;
 }
 

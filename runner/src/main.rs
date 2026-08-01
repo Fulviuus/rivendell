@@ -16,6 +16,31 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8787/mcp";
 
+/// Distinct so a parent can tell "this looped" from "this crashed" and stop
+/// restarting it.
+const EXIT_CEILING: i32 = 3;
+
+/// One JSON line per state change, for a parent watching stdout. Silent unless
+/// asked, so running this by hand stays readable.
+fn report(cfg: &Config, mut v: serde_json::Value) {
+    if !cfg.report {
+        return;
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.insert("t".into(), serde_json::json!(now_secs()));
+    }
+    println!("{v}");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 struct Config {
     url: String,
     key: String,
@@ -25,6 +50,10 @@ struct Config {
     settle: u64,
     /// A run still going after this is stuck, not thinking.
     limit: u64,
+    /// Nothing legitimate needs an agent started this often. 0 disables it.
+    ceiling: usize,
+    /// Emit one JSON line per state change, for a parent watching stdout.
+    report: bool,
     once: bool,
     cmd: Vec<String>,
 }
@@ -77,6 +106,9 @@ fn main() {
         Err(_) => 0,
     };
 
+    report(&cfg, serde_json::json!({ "state": "waiting", "agent": name }));
+    let mut recent: Vec<Instant> = Vec::new();
+
     loop {
         let res = call(
             &agent,
@@ -108,8 +140,27 @@ fn main() {
             .map(|t| format!("#{t}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // Nothing legitimate starts an agent this often. Stopping is the
+        // point: a rate limit would still bill every hour of the night, and
+        // whatever is looping needs a person to look at it.
+        recent.retain(|t: &Instant| t.elapsed() < Duration::from_secs(3600));
+        if cfg.ceiling > 0 && recent.len() >= cfg.ceiling {
+            report(&cfg, serde_json::json!({
+                "state": "ceiling",
+                "detail": format!("started {} times in an hour", cfg.ceiling),
+            }));
+            eprintln!(
+                "rivendell-run: started {} times in an hour, which is not normal. Stopping.",
+                cfg.ceiling
+            );
+            std::process::exit(EXIT_CEILING);
+        }
+        recent.push(Instant::now());
+
         eprintln!("rivendell-run: {name} — activity on {list}");
+        report(&cfg, serde_json::json!({ "state": "running", "threads": threads }));
         run(&cfg, &threads, &list);
+        report(&cfg, serde_json::json!({ "state": "waiting" }));
 
         if cfg.once {
             return;
@@ -123,6 +174,14 @@ fn main() {
 /// Its own actions are filtered out, which is what stops a reply from waking
 /// the agent that just wrote it and looping for ever.
 fn threads_needing_me(update: &serde_json::Value, my_id: i64) -> Vec<i64> {
+    // Rivendell answers this itself when it can: `needs_you` is the subset
+    // somebody else moved *and* this agent may still act on — it knows about
+    // resolved threads, paused rooms and spent reply budgets, none of which are
+    // visible from out here. Falling back to the local filter keeps this
+    // working against an older Rivendell.
+    if let Some(ids) = update["needs_you"].as_array() {
+        return ids.iter().filter_map(|v| v.as_i64()).collect();
+    }
     let mut out: Vec<i64> = Vec::new();
     let Some(events) = update["events"].as_array() else {
         return out;
@@ -274,6 +333,8 @@ fn parse_args() -> Result<Config, String> {
         wait: 900,
         settle: 2,
         limit: 20 * 60,
+        ceiling: 40,
+        report: false,
         once: false,
         cmd,
     };
@@ -307,6 +368,14 @@ fn parse_args() -> Result<Config, String> {
                 cfg.limit = need(i)?.parse().map_err(|_| "--limit wants seconds")?;
                 i += 2;
             }
+            "--ceiling" => {
+                cfg.ceiling = need(i)?.parse().map_err(|_| "--ceiling wants a count")?;
+                i += 2;
+            }
+            "--report" => {
+                cfg.report = true;
+                i += 1;
+            }
             "--once" => {
                 cfg.once = true;
                 i += 1;
@@ -337,6 +406,8 @@ Wakes an agent when a Rivendell room needs it.
   --wait SECS     how long each poll blocks; default 900
   --settle SECS   pause after a run, so a burst is one wake-up; default 2
   --limit SECS    kill a run that has not finished; default 1200
+  --ceiling N     stop after N starts in an hour; default 40, 0 to disable
+  --report        emit one JSON line per state change on stdout
   --once          handle one wake-up and exit — useful for trying it out
 
 The command runs once per wake-up. In its arguments, {{prompt}} becomes an
@@ -403,6 +474,48 @@ mod tests {
             { "kind": "thread.mentioned", "thread_id": 44, "actor_agent_id": 9 },
         ]));
         assert_eq!(threads_needing_me(&v, 7), vec![42, 43, 44]);
+    }
+
+    /// Rivendell knows things this program cannot see — resolved threads,
+    /// paused rooms, a spent reply budget. When it answers, its answer wins.
+    #[test]
+    fn rivendells_own_answer_is_preferred() {
+        let v = json!({
+            "next_cursor": 5,
+            "needs_you": [43],
+            "events": [
+                { "kind": "message.created", "thread_id": 42, "actor_agent_id": 9 },
+                { "kind": "message.created", "thread_id": 43, "actor_agent_id": 9 },
+            ]
+        });
+        // Locally both look like work; Rivendell says only 43 is.
+        assert_eq!(threads_needing_me(&v, 7), vec![43]);
+    }
+
+    /// An older Rivendell does not send it, and the watch has to keep working.
+    #[test]
+    fn without_it_the_local_filter_still_runs() {
+        let v = json!({
+            "next_cursor": 5,
+            "events": [
+                { "kind": "message.created", "thread_id": 42, "actor_agent_id": 7 },
+                { "kind": "message.created", "thread_id": 43, "actor_agent_id": 9 },
+            ]
+        });
+        assert_eq!(threads_needing_me(&v, 7), vec![43]);
+    }
+
+    /// An empty list is an answer — "nothing here needs you" — not an absence.
+    #[test]
+    fn an_empty_answer_means_do_nothing() {
+        let v = json!({
+            "next_cursor": 5,
+            "needs_you": [],
+            "events": [
+                { "kind": "message.created", "thread_id": 42, "actor_agent_id": 9 },
+            ]
+        });
+        assert!(threads_needing_me(&v, 7).is_empty());
     }
 
     #[test]

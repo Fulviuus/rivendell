@@ -173,10 +173,14 @@ pub fn update_agent(state: State<'_, AppState>, agent_id: i64, patch: Value) -> 
 }
 
 #[tauri::command]
-pub fn set_agent_revoked(state: State<'_, AppState>, agent_id: i64, revoked: bool) -> Result<()> {
+pub async fn set_agent_revoked(
+    state: State<'_, AppState>,
+    agent_id: i64,
+    revoked: bool,
+) -> Result<()> {
     if revoked {
         // Whatever is running as it stops now, not when it feels like it.
-        state.awake.set_awake(agent_id, false).ok();
+        state.awake.set_awake(agent_id, false).await.ok();
     }
     state.store.set_agent_revoked(agent_id, revoked)
 }
@@ -201,8 +205,12 @@ pub fn delete_agent(state: State<'_, AppState>, agent_id: i64) -> Result<()> {
 
 /// Have Rivendell start this agent when its rooms have work, or stop doing so.
 #[tauri::command]
-pub fn set_agent_awake(state: State<'_, AppState>, agent_id: i64, awake: bool) -> Result<()> {
-    state.awake.set_awake(agent_id, awake)
+pub async fn set_agent_awake(
+    state: State<'_, AppState>,
+    agent_id: i64,
+    awake: bool,
+) -> Result<()> {
+    state.awake.set_awake(agent_id, awake).await
 }
 
 /// Live run state for every agent the supervisor knows about. The UI merges

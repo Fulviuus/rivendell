@@ -32,13 +32,17 @@ pub struct Store {
 struct LiveToken {
     agent_id: i64,
     created_at: String,
-    minted: std::time::Instant,
+    /// Last use, not mint time — see `LIVE_TOKEN_IDLE`.
+    touched: std::time::Instant,
 }
 
-/// Nothing Rivendell starts should still be talking after this. Belt to the
-/// braces of dropping the token when the process ends: if a supervisor bug
-/// leaks one, it stops working on its own rather than lasting until quit.
-const LIVE_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+/// How long an unused live token stays valid.
+///
+/// A sliding window rather than a fixed lifetime, because the two things it has
+/// to serve pull opposite ways: a watcher Rivendell starts may legitimately sit
+/// for days, while a token leaked by a bug should stop working on its own. Idle
+/// time separates them — the watcher keeps touching it, the leak does not.
+const LIVE_TOKEN_IDLE: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
 /// How to start an agent's CLI, read off its launch profile.
 pub struct LaunchPlan {
@@ -117,7 +121,7 @@ impl Store {
             .unwrap_or_else(|e| e.into_inner())
             .insert(
                 handle.clone(),
-                LiveToken { agent_id, created_at, minted: std::time::Instant::now() },
+                LiveToken { agent_id, created_at, touched: std::time::Instant::now() },
             );
         Ok((token, handle))
     }
@@ -143,11 +147,12 @@ impl Store {
     fn live_identity(&self, token: &str) -> Option<(i64, String)> {
         let mut map = self.live_tokens.lock().unwrap_or_else(|e| e.into_inner());
         let handle = auth::hash(token);
-        let t = map.get(&handle)?;
-        if t.minted.elapsed() > LIVE_TOKEN_TTL {
+        let t = map.get_mut(&handle)?;
+        if t.touched.elapsed() > LIVE_TOKEN_IDLE {
             map.remove(&handle);
             return None;
         }
+        t.touched = std::time::Instant::now();
         Some((t.agent_id, t.created_at.clone()))
     }
 
