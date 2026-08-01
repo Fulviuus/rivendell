@@ -17,12 +17,15 @@ import {
 import type { Agent, NewAgentKey } from "../types";
 
 export function NewAgentModal({
+  projectId,
   roomId,
   roomName,
   onClose,
   onCreated,
 }: {
-  roomId: number;
+  projectId: number;
+  /** Optional room to drop it into straight away. */
+  roomId?: number;
   roomName?: string;
   onClose: () => void;
   onCreated: (key: NewAgentKey, name: string) => void;
@@ -42,13 +45,14 @@ export function NewAgentModal({
     setBusy(true);
     try {
       const key = await api.createAgent({
-        roomId,
+        projectId,
         name: name.trim(),
         role,
         profileId: profileId ? Number(profileId) : null,
         systemNote: note,
         color,
       });
+      if (roomId !== undefined) await api.joinRoom(roomId, key.agent_id);
       await refreshAgents();
       onCreated(key, name.trim());
     } catch (e) {
@@ -58,7 +62,7 @@ export function NewAgentModal({
   }
 
   return (
-    <Modal title="New agent" subtitle={roomName ? `in #${roomName}` : undefined} onClose={onClose}>
+    <Modal title="New agent" subtitle={roomName ? `for this project, joining #${roomName}` : "for this project"} onClose={onClose}>
       <div className="space-y-3.5">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name">

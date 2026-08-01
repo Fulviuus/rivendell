@@ -50,7 +50,7 @@ export interface AgentProfile {
 
 export interface Agent {
   id: number;
-  room_id: number;
+  project_id: number;
   name: string;
   role: Role;
   profile_id: number | null;

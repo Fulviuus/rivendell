@@ -41,6 +41,7 @@ pub fn common_tools() -> Vec<Value> {
              only listed for those agents unless you pass mentions_me=false.",
             obj(
                 json!({
+                    "room": {"type": "string", "description": "Limit to one room. Omit to see every room you are in."},
                     "status": {"type": "string", "description": "open (default — still live work), resolved, blocked, all, or one exact status: OPEN, AWAITING_REPLIES, NEEDS_CODER, RESOLVED, BLOCKED, WONTFIX"},
                     "tag": {"type": "string", "description": "Filter to one tag, e.g. ADVERSARIAL_REVIEW"},
                     "mentions_me": {"type": "boolean", "description": "Default true for assistants: only threads addressed to you or to everyone"},
@@ -224,6 +225,7 @@ pub fn coder_tools() -> Vec<Value> {
              `wait_for_updates`; you do not need to launch anything.",
             obj(
                 json!({
+                    "room": {"type": "string", "description": "Which room, by name. Only needed when you are in more than one — whoami lists them."},
                     "title": {"type": "string"},
                     "body": {"type": "string", "description": "Markdown. Say what you tried and what you expect, not just what is broken."},
                     "tag": {"type": "string", "description": "HELP_REQUEST, ADVERSARIAL_REVIEW, DESIGN_REVIEW, SECURITY_REVIEW, ARCHITECTURE_DECISION, SPEC_CLARIFICATION, PERF, FYI"},
@@ -301,8 +303,8 @@ pub async fn call(
         "get_thread" => {
             let id = int_arg(&args, "thread_id")?;
             let d = store.thread_detail(id)?;
-            if d.summary.room_id != ctx.room_id {
-                return Err(Error::Forbidden("that thread is in another room".into()));
+            if !store.rooms_for(ctx.id)?.contains(&d.summary.room_id) {
+                return Err(Error::Forbidden("you are not in that room".into()));
             }
             Ok(render_thread(store, &d)?)
         }
@@ -347,7 +349,7 @@ pub async fn call(
         "search" => {
             let q = str_arg(&args, "query")?;
             let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
-            let rows = store.search(Some(ctx.room_id), &q, limit)?;
+            let rows = store.search(room_arg(store, ctx, &args, "room")?, &q, limit)?;
             Ok(serde_json::to_string_pretty(&rows)?)
         }
 
@@ -382,6 +384,13 @@ pub async fn call(
 }
 
 fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
+    let joined = store.rooms_for(ctx.id)?;
+    let rooms: Vec<Value> = store
+        .list_rooms()?
+        .into_iter()
+        .filter(|r| joined.contains(&r.id))
+        .map(|r| json!({"room_id": r.id, "name": r.name, "purpose": r.purpose, "paused": r.paused}))
+        .collect();
     let tags: Vec<Value> = store
         .list_tags()?
         .into_iter()
@@ -401,11 +410,9 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
         "agent_id": ctx.id,
         "name": ctx.name,
         "role": ctx.role,
-        "room": ctx.room_name,
-        "room_id": ctx.room_id,
         "project": ctx.project_name,
         "project_folder": ctx.folder_path,
-        "room_paused": ctx.paused,
+        "rooms": rooms,
         "can_open_threads": ctx.is_coder(),
         "tags": tags,
     }))?)
@@ -420,20 +427,31 @@ fn list_threads(store: &Arc<Store>, ctx: &AgentCtx, args: &Value) -> Result<Stri
         .unwrap_or(ctx.role == "ASSISTANT");
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(50);
 
-    let rows = store.list_threads(
-        Some(ctx.room_id),
-        Some(status),
-        tag,
-        if mentions_me { Some(ctx.id) } else { None },
-        args.get("sort").and_then(|v| v.as_str()),
-        limit,
-    )?;
+    let only = room_arg(store, ctx, args, "room")?;
+    let joined = store.rooms_for(ctx.id)?;
+
+    let mut rows = Vec::new();
+    for room in joined {
+        if let Some(one) = only {
+            if one != room {
+                continue;
+            }
+        }
+        rows.extend(store.list_threads(
+            Some(room),
+            Some(status),
+            tag,
+            if mentions_me { Some(ctx.id) } else { None },
+            args.get("sort").and_then(|v| v.as_str()),
+            limit,
+        )?);
+    }
     Ok(serde_json::to_string_pretty(&rows)?)
 }
 
 fn list_agents(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
     let rows: Vec<Value> = store
-        .list_agents(Some(ctx.room_id))?
+        .list_agents(room_arg(store, ctx, &Value::Null, "room")?)?
         .into_iter()
         .map(|a| {
             json!({
@@ -449,14 +467,43 @@ fn list_agents(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
     Ok(serde_json::to_string_pretty(&rows)?)
 }
 
+/// Resolves a `room` argument by name or id, restricted to rooms the agent has
+/// joined. Returns None when the caller did not name one and it is ambiguous —
+/// an agent in exactly one room never has to say which.
+fn room_arg(store: &Arc<Store>, ctx: &AgentCtx, args: &Value, key: &str) -> Result<Option<i64>> {
+    let joined = store.rooms_for(ctx.id)?;
+    let Some(v) = args.get(key) else {
+        return Ok(if joined.len() == 1 { Some(joined[0]) } else { None });
+    };
+    let rooms = store.list_rooms()?;
+    let found = if let Some(id) = v.as_i64() {
+        rooms.iter().find(|r| r.id == id)
+    } else if let Some(name) = v.as_str() {
+        let name = name.trim_start_matches('#');
+        rooms.iter().find(|r| r.name.eq_ignore_ascii_case(name))
+    } else {
+        None
+    };
+    let room = found.ok_or_else(|| Error::NotFound(format!("room {v}")))?;
+    if !joined.contains(&room.id) {
+        return Err(Error::Forbidden(format!("you are not in #{}", room.name)));
+    }
+    Ok(Some(room.id))
+}
+
 fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<String> {
     let context: Vec<ContextInput> = match args.get("context") {
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| Error::Invalid(format!("bad context: {e}")))?,
         None => vec![],
     };
+    let room_id = room_arg(store, ctx, &args, "room")?.ok_or_else(|| {
+        Error::Invalid(
+            "which room? pass `room` — whoami lists the ones you are in".into(),
+        )
+    })?;
     let input = NewThread {
-        room_id: ctx.room_id,
+        room_id,
         title: str_arg(&args, "title")?,
         body: str_arg(&args, "body")?,
         tag: str_arg(&args, "tag")?,
@@ -494,9 +541,16 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
         None => store.latest_seq()?,
     };
 
+    let joined = store.rooms_for(ctx.id)?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
     loop {
-        let rows = store.events_since(cursor, Some(ctx.room_id), 100)?;
+        // Everything from every room this agent is in.
+        let rows: Vec<_> = store
+            .events_since(cursor, None, 200)?
+            .into_iter()
+            .filter(|e| e.room_id.map(|r| joined.contains(&r)).unwrap_or(false))
+            .take(100)
+            .collect();
         if !rows.is_empty() {
             let next = rows.last().map(|r| r.seq).unwrap_or(cursor);
             return Ok(serde_json::to_string_pretty(&json!({
@@ -727,7 +781,11 @@ pub fn prompts_get(store: &Arc<Store>, params: &Value) -> Result<Value> {
 
 pub fn resources_list(store: &Arc<Store>, ctx: &AgentCtx) -> Result<Value> {
     let rows: Vec<Value> = store
-        .list_threads(Some(ctx.room_id), Some("open"), None, None, None, 100)?
+        .list_threads(None, Some("open"), None, None, None, 100)?
+        .into_iter()
+        .filter(|t| store.rooms_for(ctx.id).map(|r| r.contains(&t.room_id)).unwrap_or(false))
+        .collect::<Vec<_>>()
+        .into_iter()
         .into_iter()
         .map(|t| {
             json!({
@@ -752,8 +810,8 @@ pub fn resources_read(store: &Arc<Store>, ctx: &AgentCtx, params: &Value) -> Res
         .ok_or_else(|| Error::Invalid(format!("unsupported uri `{uri}`")))?;
 
     let d = store.thread_detail(id)?;
-    if d.summary.room_id != ctx.room_id {
-        return Err(Error::Forbidden("that thread is in another room".into()));
+    if !store.rooms_for(ctx.id)?.contains(&d.summary.room_id) {
+        return Err(Error::Forbidden("you are not in that room".into()));
     }
     Ok(json!({
         "contents": [{

@@ -12,18 +12,23 @@ import type { Agent } from "../types";
 export function AgentRoster({
   agents,
   compact,
+  inRoom,
   onAdd,
   onEdit,
   onRotate,
   onDelete,
+  onRemove,
 }: {
   agents: Agent[];
   /** Tighter rows, for the per-room blocks inside project settings. */
   compact?: boolean;
+  /** Viewing one room: offer "remove from room" as well as delete. */
+  inRoom?: boolean;
   onAdd: () => void;
   onEdit: (a: Agent) => void;
   onRotate: (a: Agent) => void;
   onDelete: (a: Agent) => void;
+  onRemove?: (a: Agent) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -75,7 +80,22 @@ export function AgentRoster({
             >
               <Icon name="key" size={11} />
             </Button>
-            <Button size="sm" variant="subtle" title="Delete agent" onClick={() => onDelete(a)}>
+            {inRoom && onRemove && (
+              <Button
+                size="sm"
+                variant="subtle"
+                title="Remove from this room — the agent stays in the project"
+                onClick={() => onRemove(a)}
+              >
+                <Icon name="x" size={11} />
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="subtle"
+              title="Delete this agent from the project entirely"
+              onClick={() => onDelete(a)}
+            >
               <Icon name="trash" size={11} />
             </Button>
           </div>
@@ -84,7 +104,7 @@ export function AgentRoster({
 
       <Button size="sm" variant="subtle" onClick={onAdd}>
         <Icon name="plus" size={12} />
-        Add an agent to this room
+        {inRoom ? "Create a new agent" : "Add an agent"}
       </Button>
     </div>
   );

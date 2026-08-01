@@ -32,7 +32,7 @@ fn main() {
     };
     let room = store.create_room(project.id, "general", "Day-to-day review and help").unwrap();
     store
-        .create_agent(room, "you", "HUMAN", None, "The human in the room.", "slate")
+        .create_agent(project.id, "you", "HUMAN", None, "The human in the room.", "slate")
         .unwrap();
 
     let profiles = store.list_profiles().unwrap();
@@ -40,7 +40,7 @@ fn main() {
 
     let (coder_id, coder_key) = store
         .create_agent(
-            room,
+            project.id,
             "main",
             "CODER",
             id_of("external"),
@@ -50,7 +50,7 @@ fn main() {
         .unwrap();
     let (skeptic_id, _) = store
         .create_agent(
-            room,
+            project.id,
             "skeptic",
             "ASSISTANT",
             id_of("claude-code"),
@@ -60,7 +60,7 @@ fn main() {
         .unwrap();
     let (auditor_id, _) = store
         .create_agent(
-            room,
+            project.id,
             "auditor",
             "ASSISTANT",
             id_of("claude-code"),

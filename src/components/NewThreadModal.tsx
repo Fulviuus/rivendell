@@ -44,19 +44,17 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
     if (roomId === null) return;
     api.listProjectFiles(roomId).then(setFiles).catch(() => setFiles([]));
     api
-      .listAgents()
-      .then((all) => {
-        const siblings = rooms.filter((r) => r.project_id === room?.project_id && r.id !== roomId);
-        setElsewhere(
-          siblings
-            .map((r) => ({
-              room: r.name,
-              names: all
-                .filter((a) => a.room_id === r.id && a.role === "ASSISTANT" && !a.revoked_at)
-                .map((a) => a.name),
-            }))
-            .filter((r) => r.names.length > 0),
-        );
+      .listRooms()
+      .then(async (all) => {
+        const siblings = all.filter((r) => r.project_id === room?.project_id && r.id !== roomId);
+        const found = [];
+        for (const r of siblings) {
+          const names = (await api.listAgents(r.id))
+            .filter((a) => a.role === "ASSISTANT" && !a.revoked_at)
+            .map((a) => a.name);
+          if (names.length) found.push({ room: r.name, names });
+        }
+        setElsewhere(found);
       })
       .catch(() => setElsewhere([]));
     api

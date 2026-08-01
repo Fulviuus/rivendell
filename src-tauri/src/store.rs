@@ -21,12 +21,9 @@ pub struct AgentCtx {
     pub id: i64,
     pub name: String,
     pub role: String,
-    pub room_id: i64,
-    pub room_name: String,
     pub project_id: i64,
     pub project_name: String,
     pub folder_path: String,
-    pub paused: bool,
 }
 
 impl AgentCtx {
@@ -254,10 +251,7 @@ impl Store {
                 "SELECT COUNT(*) FROM messages m JOIN threads t ON t.id=m.thread_id
                  JOIN rooms r ON r.id=t.room_id WHERE r.project_id=?1",
             )?,
-            agents: one(
-                "SELECT COUNT(*) FROM agents a JOIN rooms r ON r.id=a.room_id
-                 WHERE r.project_id=?1",
-            )?,
+            agents: one("SELECT COUNT(*) FROM agents WHERE project_id=?1")?,
             // These live in the repo and survive the delete — worth saying so.
             exported_records: one(
                 "SELECT COUNT(*) FROM threads t JOIN rooms r ON r.id=t.room_id
@@ -491,17 +485,22 @@ impl Store {
 
     // ------------------------------------------------------------ agents ---
 
+    /// Every agent, or only those in one room. `room_id` filters by
+    /// membership, `project_id` by ownership.
     pub fn list_agents(&self, room_id: Option<i64>) -> Result<Vec<Agent>> {
         let conn = self.lock();
         let mut sql = String::from(
-            "SELECT a.id,a.room_id,a.name,a.role,a.profile_id,p.key,p.label,
+            "SELECT a.id,a.project_id,a.name,a.role,a.profile_id,p.key,p.label,
                     COALESCE(p.icon, CASE a.role WHEN 'HUMAN' THEN 'user' ELSE 'robot' END),
                     a.color,a.key_preview,a.system_note,a.created_at,a.revoked_at
              FROM agents a LEFT JOIN agent_profiles p ON p.id=a.profile_id",
         );
         let mut ps: Vec<rusqlite::types::Value> = vec![];
         if let Some(r) = room_id {
-            sql.push_str(" WHERE a.room_id=?1");
+            sql.push_str(
+                " WHERE EXISTS(SELECT 1 FROM room_members m
+                                WHERE m.agent_id=a.id AND m.room_id=?1)",
+            );
             ps.push(r.into());
         }
         sql.push_str(" ORDER BY CASE a.role WHEN 'HUMAN' THEN 0 WHEN 'CODER' THEN 1 ELSE 2 END, a.name");
@@ -511,7 +510,7 @@ impl Store {
             .query_map(params_from_iter(ps), |r| {
                 Ok(Agent {
                     id: r.get(0)?,
-                    room_id: r.get(1)?,
+                    project_id: r.get(1)?,
                     name: r.get(2)?,
                     role: r.get(3)?,
                     profile_id: r.get(4)?,
@@ -532,7 +531,7 @@ impl Store {
     /// Returns the one and only plaintext view of the new key.
     pub fn create_agent(
         &self,
-        room_id: i64,
+        project_id: i64,
         name: &str,
         role: &str,
         profile_id: Option<i64>,
@@ -550,11 +549,11 @@ impl Store {
 
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO agents(room_id,name,role,profile_id,key_id,key_hash,key_preview,
+            "INSERT INTO agents(project_id,name,role,profile_id,key_id,key_hash,key_preview,
                                 system_note,color,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
-                room_id,
+                project_id,
                 name,
                 role,
                 profile_id,
@@ -568,14 +567,14 @@ impl Store {
         )
         .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(f, _) if f.extended_code == 2067 => {
-                Error::Invalid(format!("this room already has an agent called {name}"))
+                Error::Invalid(format!("this project already has an agent called {name}"))
             }
             other => other.into(),
         })?;
         let id = conn.last_insert_rowid();
         let notice = Self::append_event(
             &conn,
-            Some(room_id),
+            None,
             None,
             "agent.created",
             None,
@@ -611,7 +610,6 @@ impl Store {
     /// Edits the mutable parts of an agent. The key and room are not among
     /// them — rotate or recreate for those.
     pub fn update_agent(&self, agent_id: i64, patch: serde_json::Value) -> Result<()> {
-        let room_id = self.agent_ctx(agent_id)?.room_id;
         {
             let conn = self.lock();
             for (col, key) in [
@@ -641,7 +639,7 @@ impl Store {
                 };
                 n.map_err(|e| match e {
                     rusqlite::Error::SqliteFailure(f, _) if f.extended_code == 2067 => {
-                        Error::Invalid("this room already has an agent with that name".into())
+                        Error::Invalid("this project already has an agent with that name".into())
                     }
                     other => Error::from(other),
                 })?;
@@ -650,7 +648,7 @@ impl Store {
         let conn = self.lock();
         let notice = Self::append_event(
             &conn,
-            Some(room_id),
+            None,
             None,
             "agent.updated",
             Some(agent_id),
@@ -673,26 +671,22 @@ impl Store {
             return Ok(None);
         };
         let conn = self.lock();
-        let row: Option<(i64, String, String, i64, String, i64, String, String, i64, String)> = conn
+        let row: Option<(i64, String, String, i64, String, String, String)> = conn
             .query_row(
-                "SELECT a.id,a.name,a.role,a.room_id,r.name,p.id,p.name,p.folder_path,r.paused,
-                        COALESCE(a.key_hash,'')
+                "SELECT a.id,a.name,a.role,p.id,p.name,p.folder_path,COALESCE(a.key_hash,'')
                  FROM agents a
-                 JOIN rooms r ON r.id=a.room_id
-                 JOIN projects p ON p.id=r.project_id
+                 JOIN projects p ON p.id=a.project_id
                  WHERE a.key_id=?1 AND a.revoked_at IS NULL",
                 params![key_id],
                 |r| {
                     Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
-                        r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
                     ))
                 },
             )
             .optional()?;
 
-        let Some((id, name, role, room_id, room_name, project_id, project_name, folder_path, paused, hash)) = row
-        else {
+        let Some((id, name, role, project_id, project_name, folder_path, hash)) = row else {
             return Ok(None);
         };
         if !auth::verify(token, &hash) {
@@ -702,20 +696,102 @@ impl Store {
             id,
             name,
             role,
-            room_id,
-            room_name,
             project_id,
             project_name,
             folder_path,
-            paused: paused != 0,
         }))
+    }
+
+    /// Rooms this agent has joined.
+    pub fn rooms_for(&self, agent_id: i64) -> Result<Vec<i64>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT room_id FROM room_members WHERE agent_id=?1 ORDER BY room_id")?;
+        let out = stmt
+            .query_map(params![agent_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(out)
+    }
+
+    /// Membership is what room isolation now rests on: an agent may only touch
+    /// a room it has actually joined, even within its own project.
+    fn require_member(conn: &Connection, agent_id: i64, room_id: i64) -> Result<()> {
+        let member: bool = conn
+            .prepare("SELECT 1 FROM room_members WHERE room_id=?1 AND agent_id=?2")?
+            .exists(params![room_id, agent_id])?;
+        if member {
+            Ok(())
+        } else {
+            Err(Error::Forbidden(
+                "you are not in that room".into(),
+            ))
+        }
+    }
+
+    fn room_paused(conn: &Connection, room_id: i64) -> Result<bool> {
+        Ok(conn.query_row("SELECT paused FROM rooms WHERE id=?1", params![room_id], |r| {
+            r.get::<_, i64>(0)
+        })? != 0)
+    }
+
+    fn room_name(conn: &Connection, room_id: i64) -> Result<String> {
+        Ok(conn.query_row("SELECT name FROM rooms WHERE id=?1", params![room_id], |r| r.get(0))?)
+    }
+
+    pub fn join_room(&self, room_id: i64, agent_id: i64) -> Result<()> {
+        let conn = self.lock();
+        let same: bool = conn
+            .prepare(
+                "SELECT 1 FROM agents a JOIN rooms r ON r.project_id=a.project_id
+                 WHERE a.id=?1 AND r.id=?2",
+            )?
+            .exists(params![agent_id, room_id])?;
+        if !same {
+            return Err(Error::Forbidden(
+                "an agent can only join rooms in its own project".into(),
+            ));
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO room_members(room_id,agent_id,joined_at) VALUES(?1,?2,?3)",
+            params![room_id, agent_id, now()],
+        )?;
+        let notice = Self::append_event(
+            &conn,
+            Some(room_id),
+            None,
+            "agent.joined",
+            Some(agent_id),
+            serde_json::json!({}),
+        )?;
+        drop(conn);
+        self.publish(notice);
+        Ok(())
+    }
+
+    pub fn leave_room(&self, room_id: i64, agent_id: i64) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM room_members WHERE room_id=?1 AND agent_id=?2",
+            params![room_id, agent_id],
+        )?;
+        let notice = Self::append_event(
+            &conn,
+            Some(room_id),
+            None,
+            "agent.left",
+            Some(agent_id),
+            serde_json::json!({}),
+        )?;
+        drop(conn);
+        self.publish(notice);
+        Ok(())
     }
 
     pub fn agent_ctx(&self, agent_id: i64) -> Result<AgentCtx> {
         let conn = self.lock();
         conn.query_row(
-            "SELECT a.id,a.name,a.role,a.room_id,r.name,p.id,p.name,p.folder_path,r.paused
-             FROM agents a JOIN rooms r ON r.id=a.room_id JOIN projects p ON p.id=r.project_id
+            "SELECT a.id,a.name,a.role,p.id,p.name,p.folder_path
+             FROM agents a JOIN projects p ON p.id=a.project_id
              WHERE a.id=?1",
             params![agent_id],
             |r| {
@@ -723,12 +799,9 @@ impl Store {
                     id: r.get(0)?,
                     name: r.get(1)?,
                     role: r.get(2)?,
-                    room_id: r.get(3)?,
-                    room_name: r.get(4)?,
-                    project_id: r.get(5)?,
-                    project_name: r.get(6)?,
-                    folder_path: r.get(7)?,
-                    paused: r.get::<_, i64>(8)? != 0,
+                    project_id: r.get(3)?,
+                    project_name: r.get(4)?,
+                    folder_path: r.get(5)?,
                 })
             },
         )
@@ -756,8 +829,11 @@ impl Store {
             return Ok(vec![]);
         }
 
+        // Only agents who are actually in this room can be summoned into it.
         let mut stmt = conn.prepare(
-            "SELECT id, name FROM agents WHERE room_id=?1 AND revoked_at IS NULL",
+            "SELECT a.id, a.name FROM agents a
+             JOIN room_members m ON m.agent_id=a.id
+             WHERE m.room_id=?1 AND a.revoked_at IS NULL",
         )?;
         let roster: Vec<(i64, String)> = stmt
             .query_map(params![room_id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -867,9 +943,7 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))?;
-        if room_id != actor.room_id {
-            return Err(Error::Forbidden("that thread is in another room".into()));
-        }
+        Self::require_member(&conn, actor.id, room_id)?;
         if is_terminal(&status) {
             return Err(Error::Forbidden(format!("thread {thread_id} is {status}")));
         }
@@ -946,19 +1020,19 @@ impl Store {
                 "only a CODER may open a thread; assistants reply".into(),
             ));
         }
-        if author.paused && !author.is_human() {
-            return Err(Error::Forbidden(format!(
-                "room #{} is paused",
-                author.room_name
-            )));
+        {
+            let conn = self.lock();
+            Self::require_member(&conn, author.id, input.room_id)?;
+            if !author.is_human() && Self::room_paused(&conn, input.room_id)? {
+                return Err(Error::Forbidden(format!(
+                    "room #{} is paused",
+                    Self::room_name(&conn, input.room_id)?
+                )));
+            }
         }
         if input.title.trim().is_empty() {
             return Err(Error::Invalid("a thread needs a title".into()));
         }
-        if input.room_id != author.room_id {
-            return Err(Error::Forbidden("that room is not yours".into()));
-        }
-
         let root = author.root()?;
         let created = now();
 
@@ -1067,13 +1141,19 @@ impl Store {
         if author != actor.id && !actor.is_human() {
             return Err(Error::Forbidden("only the author may edit the topic".into()));
         }
+        let room_id: i64 = conn.query_row(
+            "SELECT room_id FROM threads WHERE id=?1",
+            params![thread_id],
+            |r| r.get(0),
+        )?;
+        Self::require_member(&conn, actor.id, room_id)?;
         conn.execute(
             "UPDATE threads SET body=?1, updated_at=?2 WHERE id=?3",
             params![body, now(), thread_id],
         )?;
         let notice = Self::append_event(
             &conn,
-            Some(actor.room_id),
+            Some(room_id),
             Some(thread_id),
             "thread.updated",
             Some(actor.id),
@@ -1092,13 +1172,19 @@ impl Store {
             return Err(Error::Forbidden("only a CODER may change thread status".into()));
         }
         let conn = self.lock();
+        let room_id: i64 = conn.query_row(
+            "SELECT room_id FROM threads WHERE id=?1",
+            params![thread_id],
+            |r| r.get(0),
+        )?;
+        Self::require_member(&conn, actor.id, room_id)?;
         conn.execute(
             "UPDATE threads SET status=?1, updated_at=?2 WHERE id=?3",
             params![status, now(), thread_id],
         )?;
         let notice = Self::append_event(
             &conn,
-            Some(actor.room_id),
+            Some(room_id),
             Some(thread_id),
             "thread.status",
             Some(actor.id),
@@ -1168,7 +1254,7 @@ impl Store {
         let conn = self.lock();
         let notice = Self::append_event(
             &conn,
-            Some(actor.room_id),
+            Some(detail.summary.room_id),
             Some(thread_id),
             "thread.resolved",
             Some(actor.id),
@@ -1366,16 +1452,14 @@ impl Store {
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("thread {}", input.thread_id)))?;
 
-        if room_id != actor.room_id {
-            return Err(Error::Forbidden("that thread is in another room".into()));
-        }
+        Self::require_member(&guard, actor.id, room_id)?;
 
         // --- rails -------------------------------------------------------
         if !actor.is_human() {
-            if actor.paused {
+            if Self::room_paused(&guard, room_id)? {
                 return Err(Error::Forbidden(format!(
                     "room #{} is paused; nothing will be accepted until it is resumed",
-                    actor.room_name
+                    Self::room_name(&guard, room_id)?
                 )));
             }
             if is_terminal(&status) {
@@ -1421,7 +1505,7 @@ impl Store {
             if cap > 0.0 && spent >= cap {
                 return Err(Error::Limit(format!(
                     "room #{} has spent ${spent:.2} of its ${cap:.2} cap",
-                    actor.room_name
+                    Self::room_name(&guard, room_id)?
                 )));
             }
         }
@@ -1608,15 +1692,13 @@ impl Store {
             params![thread_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        if room_id != actor.room_id {
-            return Err(Error::Forbidden("that thread is in another room".into()));
-        }
+        Self::require_member(&guard, actor.id, room_id)?;
         // Agents are held to the room's state; the human is the override.
         if !actor.is_human() {
-            if actor.paused {
+            if Self::room_paused(&guard, room_id)? {
                 return Err(Error::Forbidden(format!(
                     "room #{} is paused",
-                    actor.room_name
+                    Self::room_name(&guard, room_id)?
                 )));
             }
             if is_terminal(&status) {
@@ -1836,7 +1918,9 @@ SELECT t.id, t.room_id, r.name, t.title, t.tag, t.status, t.author_agent_id, a.n
        (SELECT COUNT(*) FROM thread_claims c
           JOIN agents ca ON ca.id=c.agent_id
          WHERE c.thread_id=t.id AND ca.revoked_at IS NULL
-           AND c.claimed_at > datetime('now', '-' || r.response_timeout_secs || ' seconds')
+           AND substr(c.claimed_at, 1, 19)
+                 > strftime('%Y-%m-%dT%H:%M:%S', 'now',
+                            '-' || r.response_timeout_secs || ' seconds')
            AND NOT EXISTS(SELECT 1 FROM messages m
                            WHERE m.thread_id=t.id AND m.agent_id=c.agent_id)) AS in_progress,
        (SELECT COALESCE(SUM(m.cost_usd),0) FROM messages m WHERE m.thread_id=t.id) AS cost_usd,

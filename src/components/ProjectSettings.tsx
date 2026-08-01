@@ -42,6 +42,7 @@ export function ProjectSettings({
   // rather than flattening them — the flat "Agents" button was exactly the
   // ambiguity that made the scoping unclear.
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [members, setMembers] = useState<Record<number, number[]>>({});
   const [adding, setAdding] = useState<{ id: number; name: string } | null>(null);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [revealed, setRevealed] = useState<{
@@ -65,8 +66,13 @@ export function ProjectSettings({
   const loadAgents = async () => {
     try {
       const all = await api.listAgents();
-      const ids = new Set(projectRooms.map((r) => r.id));
-      setAgents(all.filter((a) => ids.has(a.room_id)));
+      setAgents(all.filter((a) => a.project_id === project.id));
+      // Membership, so each room can show who is actually in it.
+      const map: Record<number, number[]> = {};
+      for (const r of projectRooms) {
+        map[r.id] = (await api.listAgents(r.id)).map((a) => a.id);
+      }
+      setMembers(map);
     } catch (e) {
       notify("error", errText(e));
     }
@@ -91,6 +97,7 @@ export function ProjectSettings({
   if (adding) {
     return (
       <NewAgentModal
+        projectId={project.id}
         roomId={adding.id}
         roomName={adding.name}
         onClose={() => setAdding(null)}
@@ -240,9 +247,8 @@ export function ProjectSettings({
             Agents
           </h3>
           <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
-            An agent belongs to one room, and its API key is what puts it there. The same tool in
-            two rooms is two agents with two keys. You can also manage these from the gear
-            beside a room in the sidebar.
+            Agents belong to this project and join rooms — one identity, one key, wherever it
+            is. Create them here; put them in rooms from the gear beside a room in the sidebar.
           </p>
 
           <div className="space-y-3">
@@ -250,7 +256,7 @@ export function ProjectSettings({
               <p className="text-[12.5px] text-faint">This project has no rooms yet.</p>
             )}
             {projectRooms.map((room) => {
-              const mine = agents.filter((a) => a.room_id === room.id);
+              const mine = agents.filter((a) => (members[room.id] ?? []).includes(a.id));
               return (
                 <div key={room.id} className="rounded-xl bg-card p-2.5 shadow-card ring-1 ring-line">
                   <div className="mb-1.5 flex items-center gap-1.5">

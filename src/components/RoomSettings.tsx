@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errText } from "../api";
 import { useStore } from "../store";
-import { Button, Field, Icon, Input, Modal, Textarea } from "../ui";
+import { Avatar, Button, Field, Icon, Input, Modal, Textarea } from "../ui";
 import { AgentRoster } from "./AgentRoster";
 import { ConnectionModal, EditAgentModal, NewAgentModal } from "./AgentModals";
 import type { Agent, NewAgentKey } from "../types";
@@ -18,6 +18,8 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   const [claimWindow, setClaimWindow] = useState(String(room?.claim_window_secs ?? 120));
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Everyone in the project, so the picker can offer those not in this room.
+  const [projectAgents, setProjectAgents] = useState<Agent[]>([]);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [rotating, setRotating] = useState<Agent | null>(null);
   const [revealed, setRevealed] = useState<{ key: NewAgentKey; name: string; rotated: boolean } | null>(
@@ -25,7 +27,17 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   );
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (!room) return;
+    api
+      .listAgents()
+      .then((all) => setProjectAgents(all.filter((a) => a.project_id === room.project_id)))
+      .catch(() => setProjectAgents([]));
+  }, [room?.project_id, agents.length]);
+
   if (!room) return null;
+
+  const notHere = projectAgents.filter((a) => !agents.some((m) => m.id === a.id));
 
   if (revealed) {
     return (
@@ -40,6 +52,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
   if (adding) {
     return (
       <NewAgentModal
+        projectId={room.project_id}
         roomId={room.id}
         roomName={room.name}
         onClose={() => setAdding(false)}
@@ -162,11 +175,21 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             Agents in this room
           </h3>
           <p className="mb-2 text-[11.5px] leading-relaxed text-muted">
-            An agent belongs to one room — its key is what puts it here. To use the same tool in
-            another room, add it there too and it gets its own key.
+            An agent belongs to the project and joins rooms. Adding one here does not give it a
+            second identity — same agent, same key, now also in #{room.name}.
           </p>
+
           <AgentRoster
             agents={agents}
+            inRoom
+            onRemove={async (a) => {
+              try {
+                await api.leaveRoom(room.id, a.id);
+                await refreshAgents();
+              } catch (e) {
+                notify("error", errText(e));
+              }
+            }}
             onAdd={() => setAdding(true)}
             onEdit={setEditing}
             onRotate={setRotating}
@@ -179,6 +202,63 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
               }
             }}
           />
+
+          {notHere.length > 0 && (
+            <div className="mt-2 rounded-xl bg-code p-2.5 ring-1 ring-line">
+              <p className="mb-1.5 text-[11.5px] text-muted">
+                Already in this project — click to add to #{room.name}:
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {notHere.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={async () => {
+                      try {
+                        await api.joinRoom(room.id, a.id);
+                        await refreshAgents();
+                      } catch (e) {
+                        notify("error", errText(e));
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-card px-2 py-1 text-[12.5px] text-body shadow-card ring-1 ring-line transition hover:ring-accent/40"
+                  >
+                    <Avatar name={a.name} icon={a.icon} color={a.color} size={16} />
+                    {a.name}
+                    <Icon name="plus" size={11} className="text-faint" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+          {notHere.length > 0 && (
+            <div className="mt-2 rounded-xl bg-code p-2.5 ring-1 ring-line">
+              <p className="mb-1.5 text-[11.5px] text-muted">
+                Already in this project — click to add to #{room.name}:
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {notHere.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={async () => {
+                      try {
+                        await api.joinRoom(room.id, a.id);
+                        await refreshAgents();
+                      } catch (e) {
+                        notify("error", errText(e));
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-card px-2 py-1 text-[12.5px] text-base shadow-card ring-1 ring-line transition hover:ring-accent/40"
+                  >
+                    <Avatar name={a.name} icon={a.icon} color={a.color} size={16} />
+                    {a.name}
+                    <Icon name="plus" size={11} className="text-faint" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <Field label="Purpose">
@@ -242,7 +322,6 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             Save
           </Button>
         </div>
-      </div>
     </Modal>
   );
 }

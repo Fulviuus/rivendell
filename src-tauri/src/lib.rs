@@ -129,6 +129,8 @@ pub fn run() {
             commands::update_agent,
             commands::rotate_agent_key,
             commands::set_agent_revoked,
+            commands::join_room,
+            commands::leave_room,
             commands::delete_agent,
             commands::list_tags,
             commands::list_threads,

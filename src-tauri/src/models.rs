@@ -59,7 +59,8 @@ pub struct AgentProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: i64,
-    pub room_id: i64,
+    /// Agents belong to a project; `room_members` says which rooms they are in.
+    pub project_id: i64,
     pub name: String,
     pub role: String,
     pub profile_id: Option<i64>,

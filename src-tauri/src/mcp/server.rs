@@ -199,7 +199,7 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
         },
         "serverInfo": { "name": "rivendell", "version": env!("CARGO_PKG_VERSION") },
         "instructions": format!(
-            "You are `{}` ({}) in room #{} of project `{}`.
+            "You are `{}` ({}) in project `{}`.
 
 \
              Every agent here works the same way: stay connected and run one loop.
@@ -234,8 +234,10 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              blocked.
 
 \
+             You are in one or more rooms of this project and only see those. `whoami` lists \
+             them; where a tool takes a `room`, you only need it if you are in more than one.\n\n\
              Start with `whoami`.",
-            ctx.name, ctx.role, ctx.room_name, ctx.project_name
+            ctx.name, ctx.role, ctx.project_name
         )
     })
 }

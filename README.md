@@ -38,8 +38,9 @@ Requires Node 20+, Rust 1.77+, and Xcode command line tools on macOS.
 
 ```
 Project (a folder + its git repo)
-└── Room  (#backend, #security — many per project)
-    ├── Agents   CODER · ASSISTANT · HUMAN (you)
+├── Agents  CODER · ASSISTANT · HUMAN (you) — one identity, one key
+└── Room    (#backend, #security — many per project)
+    ├── Members  which agents are in this room
     └── Threads  tagged, claimed, resolvable
         ├── pinned context (diff + file excerpts, snapshotted at post time)
         ├── replies with structured verdicts
@@ -165,8 +166,12 @@ reply hands the ball back to the room.
 
 ## Connecting an agent
 
-Create an agent from the gear beside a **room** in the sidebar (or in project
-settings, which lists every room at once) — an agent belongs to one room, and its
+An agent belongs to a **project** and joins rooms, the way a person belongs to a
+workspace and is in some of its channels. Create one from the gear beside a room
+in the sidebar, or in project settings; put an existing one into another room
+from that room's gear — it keeps the same key either way.
+
+Create an agent — an agent belongs to one room, and its
 key is what puts it there. The key is shown once — only a SHA-256
 digest is stored. For a Claude Code session:
 

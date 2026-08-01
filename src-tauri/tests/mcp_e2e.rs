@@ -120,6 +120,27 @@ fn call(url: &str, key: &str, tool: &str, args: Value) -> (bool, String) {
     (is_error, text)
 }
 
+/// Creates an agent in the project and puts it in the room. Agents belong to a
+/// project now, and membership is what lets them see a room at all.
+fn mk_agent(h: &Harness, project: i64, room: i64, name: &str, role: &str) -> (i64, String) {
+    let (id, key) = h.store.create_agent(project, name, role, None, "", "").unwrap();
+    h.store.join_room(room, id).unwrap();
+    (id, key)
+}
+
+fn mk_agent_with(
+    h: &Harness,
+    project: i64,
+    room: i64,
+    name: &str,
+    role: &str,
+    profile: Option<i64>,
+) -> (i64, String) {
+    let (id, key) = h.store.create_agent(project, name, role, profile, "", "").unwrap();
+    h.store.join_room(room, id).unwrap();
+    (id, key)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_thread_lifecycle() {
     let h = boot("lifecycle").await;
@@ -132,14 +153,8 @@ async fn full_thread_lifecycle() {
     let profiles = h.store.list_profiles().unwrap();
     let external = profiles.iter().find(|p| p.key == "external").unwrap().id;
 
-    let (_, coder_key) = h
-        .store
-        .create_agent(room, "main", "CODER", Some(external), "", "")
-        .unwrap();
-    let (assistant_id, assistant_key) = h
-        .store
-        .create_agent(room, "skeptic", "ASSISTANT", Some(external), "", "")
-        .unwrap();
+    let (_, coder_key) = mk_agent_with(&h, project.id, room, "main", "CODER", Some(external));
+    let (assistant_id, assistant_key) = mk_agent_with(&h, project.id, room, "skeptic", "ASSISTANT", Some(external));
 
     // --- auth -----------------------------------------------------------
     let (code, _) = rpc(&h.url, None, "initialize", json!({}));
@@ -344,14 +359,8 @@ async fn threads_sort_three_ways() {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (coder_id, _) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
-    let (asst_id, _) = h
-        .store
-        .create_agent(room, "helper", "ASSISTANT", None, "", "")
-        .unwrap();
+    let (coder_id, _) = mk_agent(&h, project.id, room, "main", "CODER");
+    let (asst_id, _) = mk_agent(&h, project.id, room, "helper", "ASSISTANT");
     let coder = h.store.agent_ctx(coder_id).unwrap();
     let asst = h.store.agent_ctx(asst_id).unwrap();
 
@@ -434,14 +443,8 @@ async fn both_roles_share_one_loop() {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (_, coder_key) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
-    let (_, asst_key) = h
-        .store
-        .create_agent(room, "helper", "ASSISTANT", None, "", "")
-        .unwrap();
+    let (_, coder_key) = mk_agent(&h, project.id, room, "main", "CODER");
+    let (_, asst_key) = mk_agent(&h, project.id, room, "helper", "ASSISTANT");
 
     // Both roles are offered the same waiting primitive.
     for key in [&coder_key, &asst_key] {
@@ -545,10 +548,7 @@ async fn status_filter_buckets_cover_everything() {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (coder_id, _) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
+    let (coder_id, _) = mk_agent(&h, project.id, room, "main", "CODER");
     let coder = h.store.agent_ctx(coder_id).unwrap();
 
     let open = |title: &str| {
@@ -636,14 +636,8 @@ async fn an_edit_is_announced_and_can_be_answered() {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (_, coder_key) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
-    let (_, asst_key) = h
-        .store
-        .create_agent(room, "helper", "ASSISTANT", None, "", "")
-        .unwrap();
+    let (_, coder_key) = mk_agent(&h, project.id, room, "main", "CODER");
+    let (_, asst_key) = mk_agent(&h, project.id, room, "helper", "ASSISTANT");
 
     let (_, text) = call(
         &h.url,
@@ -743,14 +737,8 @@ async fn project_settings_and_deletion() {
         .create_project("Demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (coder_id, _) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
-    let (_, asst_key) = h
-        .store
-        .create_agent(room, "helper", "ASSISTANT", None, "", "")
-        .unwrap();
+    let (coder_id, _) = mk_agent(&h, project.id, room, "main", "CODER");
+    let (_, asst_key) = mk_agent(&h, project.id, room, "helper", "ASSISTANT");
     let coder = h.store.agent_ctx(coder_id).unwrap();
 
     let t1 = h
@@ -1043,18 +1031,9 @@ async fn seed_room(h: &Harness) -> (i64, String, String, String) {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (_, coder) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
-    let (_, first) = h
-        .store
-        .create_agent(room, "first", "ASSISTANT", None, "", "")
-        .unwrap();
-    let (_, second) = h
-        .store
-        .create_agent(room, "second", "ASSISTANT", None, "", "")
-        .unwrap();
+    let (_, coder) = mk_agent(&h, project.id, room, "main", "CODER");
+    let (_, first) = mk_agent(&h, project.id, room, "first", "ASSISTANT");
+    let (_, second) = mk_agent(&h, project.id, room, "second", "ASSISTANT");
     (room, coder, first, second)
 }
 
@@ -1071,6 +1050,74 @@ fn open_thread(h: &Harness, coder_key: &str, title: &str) -> i64 {
         .unwrap()
 }
 
+/// One agent, one key, several rooms — the thing room-scoped agents made
+/// impossible without creating a duplicate for each room.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_agent_can_be_in_several_rooms() {
+    let h = boot("membership").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let general = h.store.create_room(project.id, "general", "").unwrap();
+    let security = h.store.create_room(project.id, "security", "").unwrap();
+
+    let (_, coder_key) = mk_agent(&h, project.id, general, "main", "CODER");
+    let (helper_id, helper_key) = mk_agent(&h, project.id, general, "helper", "ASSISTANT");
+
+    // Same agent, same key, now also in #security.
+    h.store.join_room(security, helper_id).unwrap();
+    h.store.join_room(security, h.store.list_agents(None).unwrap()
+        .iter().find(|a| a.name == "main").unwrap().id).unwrap();
+
+    let (_, who) = call(&h.url, &helper_key, "whoami", json!({}));
+    let who: Value = serde_json::from_str(&who).unwrap();
+    let rooms: Vec<&str> = who["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(rooms.len(), 2, "one key, two rooms: {rooms:?}");
+
+    // A thread in each; the agent sees both without a second identity.
+    for room in ["general", "security"] {
+        let (is_err, text) = call(
+            &h.url,
+            &coder_key,
+            "create_thread",
+            json!({"room": room, "title": format!("in {room}"), "body": "…", "tag": "HELP_REQUEST"}),
+        );
+        assert!(!is_err, "{text}");
+    }
+    let (_, listed) = call(&h.url, &helper_key, "list_threads", json!({"status": "all"}));
+    assert!(listed.contains("in general") && listed.contains("in security"));
+
+    // Narrowing to one room works, and only for rooms it is in.
+    let (_, one) = call(&h.url, &helper_key, "list_threads", json!({"room": "security", "status": "all"}));
+    assert!(one.contains("in security") && !one.contains("in general"));
+
+    // Leaving takes the access away again.
+    h.store.leave_room(security, helper_id).unwrap();
+    let (is_err, text) = call(
+        &h.url,
+        &helper_key,
+        "list_threads",
+        json!({"room": "security", "status": "all"}),
+    );
+    assert!(is_err, "a room it left must be refused: {text}");
+
+    // Names are unique per project now, not per room.
+    assert!(
+        h.store
+            .create_agent(project.id, "helper", "ASSISTANT", None, "", "")
+            .is_err(),
+        "two agents in a project cannot share a name"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rooms_are_isolated() {
     let h = boot("isolation").await;
@@ -1081,20 +1128,14 @@ async fn rooms_are_isolated() {
     let room_a = h.store.create_room(project.id, "alpha", "").unwrap();
     let room_b = h.store.create_room(project.id, "beta", "").unwrap();
 
-    let (_, coder_a) = h
-        .store
-        .create_agent(room_a, "a-coder", "CODER", None, "", "")
-        .unwrap();
-    let (_, coder_b) = h
-        .store
-        .create_agent(room_b, "b-coder", "CODER", None, "", "")
-        .unwrap();
+    let (_, coder_a) = mk_agent(&h, project.id, room_a, "a-coder", "CODER");
+    let (_, coder_b) = mk_agent(&h, project.id, room_b, "b-coder", "CODER");
 
     let (is_err, text) = call(
         &h.url,
         &coder_a,
         "create_thread",
-        json!({"title": "secret alpha work", "body": "…", "tag": "FYI"}),
+        json!({"room": "alpha", "title": "secret alpha work", "body": "…", "tag": "FYI"}),
     );
     assert!(!is_err, "{text}");
     let thread_id: i64 = text
@@ -1102,8 +1143,9 @@ async fn rooms_are_isolated() {
         .find_map(|w| w.trim_end_matches('.').parse().ok())
         .unwrap();
 
+    // Same project, but b-coder never joined #alpha.
     let (is_err, text) = call(&h.url, &coder_b, "get_thread", json!({"thread_id": thread_id}));
-    assert!(is_err, "room B must not read room A's thread: {text}");
+    assert!(is_err, "a non-member must not read that room's thread: {text}");
 
     let (_, text) = call(&h.url, &coder_b, "list_threads", json!({"status": "all"}));
     assert!(
@@ -1122,10 +1164,7 @@ async fn revoked_keys_stop_working() {
         .create_project("demo", h.dir.to_str().unwrap())
         .unwrap();
     let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (agent_id, key) = h
-        .store
-        .create_agent(room, "main", "CODER", None, "", "")
-        .unwrap();
+    let (agent_id, key) = mk_agent(&h, project.id, room, "main", "CODER");
 
     let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));
     assert_eq!(code, 200);

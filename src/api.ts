@@ -44,7 +44,7 @@ export const api = {
 
   listAgents: (roomId?: number) => invoke<Agent[]>("list_agents", { roomId: roomId ?? null }),
   createAgent: (args: {
-    roomId: number;
+    projectId: number;
     name: string;
     role: string;
     profileId: number | null;
@@ -56,6 +56,10 @@ export const api = {
   rotateAgentKey: (agentId: number) => invoke<NewAgentKey>("rotate_agent_key", { agentId }),
   setAgentRevoked: (agentId: number, revoked: boolean) =>
     invoke<void>("set_agent_revoked", { agentId, revoked }),
+  joinRoom: (roomId: number, agentId: number) =>
+    invoke<void>("join_room", { roomId, agentId }),
+  leaveRoom: (roomId: number, agentId: number) =>
+    invoke<void>("leave_room", { roomId, agentId }),
   deleteAgent: (agentId: number) => invoke<void>("delete_agent", { agentId }),
 
   listTags: () => invoke<Tag[]>("list_tags"),

@@ -90,11 +90,20 @@ pub fn create_room(
     purpose: String,
 ) -> Result<i64> {
     let room_id = state.store.create_room(project_id, &name, &purpose)?;
-    // Every room gets an identity for the person sitting in front of the app,
-    // so you are a participant rather than a spectator.
-    state
-        .store
-        .create_agent(room_id, "you", "HUMAN", None, "The human in the room.", "slate")?;
+    // You are a participant in every room, not a spectator. One identity per
+    // project, joined to each room as it is made.
+    let you = match state.store.list_agents(None)? .into_iter()
+        .find(|a| a.project_id == project_id && a.role == "HUMAN")
+    {
+        Some(a) => a.id,
+        None => {
+            state
+                .store
+                .create_agent(project_id, "you", "HUMAN", None, "The human in the room.", "slate")?
+                .0
+        }
+    };
+    state.store.join_room(room_id, you)?;
     Ok(room_id)
 }
 
@@ -130,7 +139,7 @@ pub fn list_agents(state: State<'_, AppState>, room_id: Option<i64>) -> Result<V
 #[tauri::command]
 pub fn create_agent(
     state: State<'_, AppState>,
-    room_id: i64,
+    project_id: i64,
     name: String,
     role: String,
     profile_id: Option<i64>,
@@ -138,7 +147,7 @@ pub fn create_agent(
     color: Option<String>,
 ) -> Result<NewAgentKey> {
     let (agent_id, api_key) = state.store.create_agent(
-        room_id,
+        project_id,
         &name,
         &role,
         profile_id,
@@ -164,6 +173,16 @@ pub fn update_agent(state: State<'_, AppState>, agent_id: i64, patch: Value) -> 
 #[tauri::command]
 pub fn set_agent_revoked(state: State<'_, AppState>, agent_id: i64, revoked: bool) -> Result<()> {
     state.store.set_agent_revoked(agent_id, revoked)
+}
+
+#[tauri::command]
+pub fn join_room(state: State<'_, AppState>, room_id: i64, agent_id: i64) -> Result<()> {
+    state.store.join_room(room_id, agent_id)
+}
+
+#[tauri::command]
+pub fn leave_room(state: State<'_, AppState>, room_id: i64, agent_id: i64) -> Result<()> {
+    state.store.leave_room(room_id, agent_id)
 }
 
 #[tauri::command]
@@ -244,6 +263,7 @@ fn actor(store: &Arc<Store>, room_id: i64, as_agent_id: Option<i64>) -> Result<c
     match as_agent_id {
         Some(id) => store.agent_ctx(id),
         None => {
+            // Whoever represents you in this room.
             let agents = store.list_agents(Some(room_id))?;
             let human = agents
                 .iter()
