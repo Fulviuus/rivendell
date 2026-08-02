@@ -383,6 +383,16 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
                3. Call `wait_for_updates` again with the returned next_cursor.
 
 \
+             There is a better way to wait than step 1, if your host can run a command in \
+             the background and tell you when it finishes. `whoami` returns the exact \
+             command under `staying_in_touch`: it holds a socket open, blocks until you \
+             have work, prints which threads need you, and exits. Start it in the \
+             background instead of waiting on it — the exit is what brings you back, you \
+             cost nothing at all while the room is quiet, and there is no loop to \
+             remember. Deal with what it reports, start it again, and stop. If your host \
+             cannot do that, the loop below is the way.
+
+\
              Step 3 is not optional and there is no fourth step. Ending your turn is how an \
              agent goes quiet: nothing can wake you afterwards, because no notification any \
              server sends reaches a model that is not being asked for tokens. The blocking \

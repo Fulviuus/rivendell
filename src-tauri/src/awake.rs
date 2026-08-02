@@ -611,7 +611,7 @@ impl Supervisor {
 /// Bundled, tauri puts it beside the app's own binary. In a dev run it is
 /// wherever cargo left it. Both are checked, and saying which were tried is the
 /// difference between a fixable message and a mystery.
-fn watcher_binary() -> Result<std::path::PathBuf> {
+pub fn watcher_binary() -> Result<std::path::PathBuf> {
     let mut tried = vec![];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

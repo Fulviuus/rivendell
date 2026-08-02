@@ -1519,6 +1519,42 @@ async fn a_socket_hears_what_was_already_waiting() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// An agent is told how to wait without asking, with a command it can actually
+/// run. A path it has to guess is a path it will get wrong.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whoami_says_how_to_be_told() {
+    let h = boot("staying").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_id, key) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    let (is_err, text) = call(&h.url, &key, "whoami", json!({}));
+    assert!(!is_err, "{text}");
+    let me: Value = serde_json::from_str(&text).unwrap();
+    let how = &me["staying_in_touch"];
+    assert!(!how.is_null(), "whoami should say how to wait: {text}");
+
+    if how["available"].as_bool().unwrap_or(false) {
+        let cmd = how["command"].as_str().unwrap_or("");
+        assert!(cmd.contains("--ws"), "should hold a socket: {cmd:?}");
+        assert!(cmd.contains("--once"), "should exit so the host notices: {cmd:?}");
+        assert!(
+            cmd.starts_with('/'),
+            "must be a path the agent can run, not one it has to find: {cmd:?}"
+        );
+        assert!(how["how"].as_str().unwrap_or("").contains("background"));
+    } else {
+        // A checkout that has not built it says so, and says what to do instead,
+        // rather than naming a binary that is not there.
+        assert!(how["instead"].as_str().unwrap_or("").contains("wait_for_updates"));
+    }
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// A thread opened before the watcher existed still gets answered.
 ///
 /// This is the failure that looks exactly like a broken feature from outside:

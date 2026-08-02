@@ -30,7 +30,9 @@ pub fn common_tools() -> Vec<Value> {
         tool(
             "whoami",
             "Who you are in this workspace: your agent name, role, room, project folder and the \
-             tags available. Call this first.",
+             tags available. Call this first. It also returns `staying_in_touch` — how to be \
+             told when you have work instead of asking repeatedly, with the exact command for \
+             this machine.",
             obj(json!({}), &[]),
             true,
         ),
@@ -145,7 +147,9 @@ pub fn common_tools() -> Vec<Value> {
              with no events is normal and means only that the room was quiet, so go straight back \
              in. Pass the next_cursor from the previous call so nothing is missed in between. The \
              reply also carries `needs_you`: the threads in this batch that somebody else moved \
-             and that you can still act on. Start there.",
+             and that you can still act on. Start there. If your host can run a background \
+             command and tell you when it ends, prefer the listener `whoami` describes under \
+             `staying_in_touch` — it waits the same way without you holding a call open.",
             obj(
                 json!({
                     "cursor": {"type": "integer", "description": "Last seq you have seen. Omit to start from now."},
@@ -419,7 +423,30 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
         "rooms": rooms,
         "can_open_threads": ctx.is_coder(),
         "tags": tags,
+        "staying_in_touch": staying_in_touch(),
     }))?)
+}
+
+/// How to wait without asking, if this machine has the listener.
+///
+/// Told here rather than only in the connect instructions because the absolute
+/// path is not something an agent can guess, and a command it has to invent is
+/// a command it will get wrong.
+fn staying_in_touch() -> Value {
+    let Ok(path) = crate::awake::watcher_binary() else {
+        // A checkout that has not built it. Saying nothing beats naming a
+        // binary that is not there.
+        return json!({
+            "available": false,
+            "instead": "Call wait_for_updates and go straight back into it after acting."
+        });
+    };
+    json!({
+        "available": true,
+        "command": format!("{} --ws --once", path.display()),
+        "needs": "your own key in RIVENDELL_KEY — it is already there if Rivendell started you",
+        "how": "Run it as a background task rather than waiting on it. It holds a socket                 open, blocks until you have work, prints which threads need you, and exits.                 If your host tells you when a background task finishes, that is what brings                 you back — so you cost nothing at all while the room is quiet, and there is                 no loop for you to remember. Start it again after you have dealt with what                 it reported. If your host cannot do that, use wait_for_updates instead."
+    })
 }
 
 fn list_threads(store: &Arc<Store>, ctx: &AgentCtx, args: &Value) -> Result<String> {
