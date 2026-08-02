@@ -37,9 +37,27 @@ export function ThreadView() {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messageCount, thread?.id]);
 
-  // An armed confirmation must not survive a change of thread, or the second
-  // click would close something the question was never asked about.
-  useEffect(() => setConfirmClose(false), [thread?.id]);
+  // Neither an armed confirmation nor a draft may survive a change of thread.
+  // The confirmation would put its second click on something the question was
+  // never asked about; the draft is worse — this component stays mounted when
+  // the selection clears, so a half-written reply to one thread would reappear
+  // in the box for another and could be posted there.
+  useEffect(() => {
+    setConfirmClose(false);
+    setComposing("");
+  }, [thread?.id]);
+
+  // While the close confirmation is up it owns Escape, so backing out of it
+  // backs out of it — rather than escaping past it and clearing the selection,
+  // which is a bigger thing than the question asked.
+  useEffect(() => {
+    if (!confirmClose) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmClose(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmClose]);
 
   if (!thread) {
     return (
@@ -161,7 +179,8 @@ export function ThreadView() {
                 apart afterwards. Reopen exists, so a whole modal would be too
                 much; one more click is enough. */}
             {!done && confirmClose ? (
-              <>
+              // Claims Escape for the duration, the same way a modal does.
+              <span data-escape-owner className="flex items-center gap-1.5">
                 <span className="text-[12px] text-soft">
                   Close #{thread.id} with no decision record?
                 </span>
@@ -179,7 +198,7 @@ export function ThreadView() {
                 <Button size="sm" variant="subtle" onClick={() => setConfirmClose(false)}>
                   Cancel
                 </Button>
-              </>
+              </span>
             ) : !done ? (
               <>
                 <Button
@@ -317,6 +336,7 @@ export function ThreadView() {
         <div className="shrink-0 border-t border-line bg-card px-5 py-3">
           <MentionTextarea
             rows={2}
+            data-composer
             agents={agents}
             value={composing}
             placeholder="Add what you have learned, or @name an agent to call it in. ⌘↵ to post."

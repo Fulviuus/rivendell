@@ -565,17 +565,29 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
+  const overlay = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Only the top one. Modals nest — a confirmation opens over the settings
+      // that launched it — and every mounted Modal listens on the same window,
+      // so without this one Escape closed the confirmation *and* the settings
+      // behind it, taking every unsaved field with it.
+      const all = document.querySelectorAll("[data-escape-owner]");
+      if (all.length && all[all.length - 1] !== overlay.current) return;
+      onClose();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   return (
     <div
+      ref={overlay}
       // Escape belongs to whatever is on top. Marking the overlay is how the
-      // app-wide handler knows something else already owns the key.
-      data-modal
+      // app-wide handler, and every other Modal, knows who owns the key.
+      data-escape-owner
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/25 p-8 backdrop-blur-sm dark:bg-black/55"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >

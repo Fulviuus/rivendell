@@ -27,16 +27,28 @@ export default function App() {
       }
       if (e.key !== "Escape") return;
 
-      // Escape is already spoken for in three places, and taking it blindly
-      // would be worse than not having it: a modal on top owns it, the mention
-      // list uses it to dismiss itself, and a half-written reply or an edit in
-      // progress would be thrown away with the view. Only claim it when
-      // nothing else is holding it.
-      if (document.querySelector("[data-modal]")) return;
+      // Escape is already spoken for, and taking it blindly would be worse
+      // than not having it: whatever is on top owns it, the mention list uses
+      // it to dismiss itself, and a half-written reply or an edit in progress
+      // would be thrown away with the view. Only claim it when nothing else
+      // is holding it.
+      if (document.querySelector("[data-escape-owner]")) return;
+
       const el = document.activeElement as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
-        return;
-      }
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT" ||
+          el.isContentEditable);
+      // One exception, and it is the common case: the reply box is always
+      // mounted and is where focus most often sits, so guarding it blindly
+      // made the key look broken — it worked after clicking a thread and
+      // stopped the moment you touched the composer. An empty composer has
+      // nothing to protect.
+      const emptyComposer =
+        el?.hasAttribute("data-composer") && !(el as HTMLTextAreaElement).value;
+      if (typing && !emptyComposer) return;
       if (useStore.getState().threadId !== null) {
         e.preventDefault();
         void useStore.getState().selectThread(null);
