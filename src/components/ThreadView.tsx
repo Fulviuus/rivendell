@@ -26,6 +26,7 @@ export function ThreadView() {
   const room = rooms.find((r) => r.id === roomId);
   const [composing, setComposing] = useState("");
   const [resolving, setResolving] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [busy, setBusy] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -35,6 +36,10 @@ export function ThreadView() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messageCount, thread?.id]);
+
+  // An armed confirmation must not survive a change of thread, or the second
+  // click would close something the question was never asked about.
+  useEffect(() => setConfirmClose(false), [thread?.id]);
 
   if (!thread) {
     return (
@@ -150,14 +155,38 @@ export function ThreadView() {
             </div>
           </div>
 
-          <div className="flex shrink-0 gap-1.5">
-            {!done ? (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* Closing ends the thread and writes nothing to the repo, which is
+                easy to do by accident next to Resolve and impossible to tell
+                apart afterwards. Reopen exists, so a whole modal would be too
+                much; one more click is enough. */}
+            {!done && confirmClose ? (
+              <>
+                <span className="text-[12px] text-soft">
+                  Close #{thread.id} with no decision record?
+                </span>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busy}
+                  onClick={async () => {
+                    setConfirmClose(false);
+                    await setStatus("WONTFIX");
+                  }}
+                >
+                  Close it
+                </Button>
+                <Button size="sm" variant="subtle" onClick={() => setConfirmClose(false)}>
+                  Cancel
+                </Button>
+              </>
+            ) : !done ? (
               <>
                 <Button
                   size="sm"
                   disabled={busy}
                   title="Close without a decision record — nothing is written to the repo"
-                  onClick={() => setStatus("WONTFIX")}
+                  onClick={() => setConfirmClose(true)}
                 >
                   <Icon name="x" size={12} />
                   Close
