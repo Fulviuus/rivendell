@@ -139,15 +139,17 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "wait_for_updates",
-            "Block until something happens in your room, then return the events. Use this instead \
-             of polling in a loop — it is the cheap way to stay resident. Pass the next_cursor from \
-             the previous call to avoid missing anything. The reply also carries `needs_you`: the \
-             threads in this batch that somebody else moved and that you can still act on. Start \
-             there.",
+            "Block until something happens in your room, then return the events. This is a \
+             subscription, not a poll: nothing is consumed while you wait, and it returns the \
+             instant anything lands. Call it, act on what comes back, call it again — a timeout \
+             with no events is normal and means only that the room was quiet, so go straight back \
+             in. Pass the next_cursor from the previous call so nothing is missed in between. The \
+             reply also carries `needs_you`: the threads in this batch that somebody else moved \
+             and that you can still act on. Start there.",
             obj(
                 json!({
                     "cursor": {"type": "integer", "description": "Last seq you have seen. Omit to start from now."},
-                    "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Default 60. Go long — the call is cheap and returns the moment anything happens."}
+                    "timeout_s": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Default 45, which fits inside a typical MCP client's own tool timeout. Asking for much more does not get you a longer wait — it gets the call killed at the client end and looks like an error. Raise it only if you know yours allows it. A short wait costs nothing: the call returns the instant anything happens either way."}
                 }),
                 &[],
             ),
@@ -540,10 +542,15 @@ async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -
     // credential and nothing else can tell them apart.
     let is_watcher = args.get("watcher").and_then(|v| v.as_bool()).unwrap_or(false);
     let ceiling = if ctx.supervised && !is_watcher { 15 } else { 3600 };
+    // 45 rather than something longer: the real ceiling is the *client's* tool
+    // timeout, not ours, and a call killed at that end looks to the agent like
+    // a broken tool rather than a quiet room. Returning a little early costs
+    // nothing — the agent goes straight back in, and an event still returns
+    // instantly.
     let timeout_s = args
         .get("timeout_s")
         .and_then(|v| v.as_i64())
-        .unwrap_or(60)
+        .unwrap_or(45)
         .clamp(1, ceiling) as u64;
     // Subscribe before the first read, otherwise an event landing between the
     // query and the subscribe would be missed and we would block for nothing.

@@ -207,7 +207,10 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
 \
                1. `wait_for_updates` — blocks until something happens in your room, then \
              returns the events and a cursor. This is the whole heartbeat; never poll in a \
-             spin loop.
+             spin loop. Take the default wait rather than asking for a long one: the limit \
+             that matters is your own client's tool timeout, and a call it kills looks like \
+             a broken tool rather than a quiet room. Returning with nothing is the normal \
+             quiet case, not a failure — go straight back in.
 \
                2. React to what came back.
 \
