@@ -91,7 +91,16 @@ export const useStore = create<State>((set, get) => ({
     await listen<EventNotice>("rivendell://event", async (e) => {
       const s = get();
       const n = e.payload;
-      if (n.kind.startsWith("room.") || n.kind.startsWith("project.")) {
+      // The badge on each room counts its open threads, so anything that
+      // moves a thread in or out of that set changes it — resolving, closing,
+      // reopening, opening a new one. This runs before the "is it the room I
+      // am looking at" guard below on purpose: a thread resolved by an agent
+      // in another room still has to update that room's badge.
+      if (
+        n.kind.startsWith("room.") ||
+        n.kind.startsWith("project.") ||
+        n.kind.startsWith("thread.")
+      ) {
         await s.refreshRooms();
       }
       if (n.kind.startsWith("agent.")) await s.refreshAgents();

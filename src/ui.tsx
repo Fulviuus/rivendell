@@ -573,6 +573,9 @@ export function Modal({
 
   return (
     <div
+      // Escape belongs to whatever is on top. Marking the overlay is how the
+      // app-wide handler knows something else already owns the key.
+      data-modal
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/25 p-8 backdrop-blur-sm dark:bg-black/55"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
