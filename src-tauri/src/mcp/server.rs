@@ -10,10 +10,14 @@ use axum::{
     body::Body,
     extract::State,
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Router,
 };
+use tokio_stream::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -49,10 +53,75 @@ pub async fn serve(state: Arc<McpState>, port: u16) -> std::io::Result<Running> 
 }
 
 // The GET/DELETE verbs exist in the streamable-HTTP spec for server-initiated
-// SSE and session teardown. We are stateless and push nothing, so we answer
-// honestly rather than pretending to hold a session.
-async fn handle_get() -> Response {
-    (StatusCode::METHOD_NOT_ALLOWED, "this server does not open SSE streams").into_response()
+/// The server-to-client stream: every change in the agent's rooms, pushed as
+/// spec-shaped MCP notifications.
+///
+/// Worth being exact about what this can and cannot do, because it looks like
+/// more than it is. It delivers to the *client*. Whether the client then does
+/// anything — least of all invoke a model that is sitting idle — is entirely
+/// the client's business, and no server can make it. The thing that reliably
+/// resumes a model is still a call that blocks, because there the model is
+/// suspended inside the call rather than idle beside it.
+///
+/// It is here so that claim can be tested rather than argued about, and
+/// because a client that *does* act on resource subscriptions gets to.
+async fn handle_get(State(state): State<Arc<McpState>>, headers: HeaderMap) -> Response {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(crate::auth::strip_bearer)
+        .unwrap_or("");
+    let ctx = match state.store.authenticate(token) {
+        Ok(Some(c)) => c,
+        Ok(None) => return unauthorized("unknown or revoked agent key"),
+        Err(e) => return unauthorized(&format!("could not check that key: {e}")),
+    };
+
+    tracing::info!("sse: {} opened a notification stream", ctx.name);
+    let store = state.store.clone();
+    let rx = store.events.subscribe();
+    let name = ctx.name.clone();
+    let agent_id = ctx.id;
+
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |ev| {
+        let notice = ev.ok()?;
+        // Only rooms this agent is in, and never its own doing — the same two
+        // rules the long poll applies, for the same reasons.
+        let room = notice.room_id?;
+        let thread = notice.thread_id?;
+        if notice.actor_agent_id == Some(agent_id) {
+            return None;
+        }
+        if !store.rooms_for(agent_id).ok()?.contains(&room) {
+            return None;
+        }
+        tracing::info!("sse: pushing {} on thread {thread} to {name}", notice.kind);
+
+        // Two notifications per change, deliberately. `resources/updated` is
+        // the correct one — threads are already exposed as resources — and
+        // `message` is the one a client is most likely to surface at all.
+        let updated = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": { "uri": format!("rivendell://thread/{thread}") }
+        });
+        let logged = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "level": "info",
+                "logger": "rivendell",
+                "data": format!("{} on thread #{thread} — call get_thread({thread})", notice.kind)
+            }
+        });
+        Some(Ok::<_, std::convert::Infallible>(
+            Event::default().data(format!("{updated}\n{logged}")),
+        ))
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default().text("rivendell"))
+        .into_response()
 }
 
 async fn handle_delete() -> Response {
@@ -127,6 +196,11 @@ async fn dispatch(state: &Arc<McpState>, ctx: &AgentCtx, req: Value) -> Option<V
         "prompts/get" => tools::prompts_get(&state.store, &params).map_err(to_rpc),
         "resources/list" => tools::resources_list(&state.store, ctx).map_err(to_rpc),
         "resources/read" => tools::resources_read(&state.store, ctx, &params).map_err(to_rpc),
+        // Accepted, and then ignored in the only way that matters: the stream
+        // already carries everything this agent is allowed to see, so there is
+        // nothing to narrow. Answering properly beats refusing a method we
+        // advertise in `capabilities`.
+        "resources/subscribe" | "resources/unsubscribe" => Ok(json!({})),
         "resources/templates/list" => Ok(json!({
             "resourceTemplates": [{
                 "uriTemplate": "rivendell://thread/{id}",
@@ -194,7 +268,7 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
         "capabilities": {
             "tools": { "listChanged": false },
             "prompts": { "listChanged": false },
-            "resources": { "listChanged": false, "subscribe": false },
+            "resources": { "listChanged": false, "subscribe": true },
             "logging": {}
         },
         "serverInfo": { "name": "rivendell", "version": env!("CARGO_PKG_VERSION") },

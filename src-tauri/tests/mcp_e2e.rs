@@ -1310,6 +1310,100 @@ async fn a_reply_records_whether_rivendell_started_it() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// The notification stream delivers, and delivers only what this agent may see.
+///
+/// This proves the server half only. Whether a client that receives one does
+/// anything with it — least of all wake an idle model — is the client's
+/// business and cannot be asserted here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_stream_pushes_room_activity() {
+    let h = boot("sse").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let other = h.store.create_room(project.id, "elsewhere", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (_scout, scout_key) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+    // A coder in the room scout is NOT in, to prove the stream is scoped.
+    let (elsewhere, elsewhere_key) = h
+        .store
+        .create_agent(project.id, "stranger", "CODER", None, "", "")
+        .unwrap();
+    h.store.join_room(other, elsewhere).unwrap();
+
+    let url = h.url.clone();
+    let key = scout_key.clone();
+    let reader = std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_read(std::time::Duration::from_secs(20))
+            .build();
+        let res = agent
+            .get(&url)
+            .set("Authorization", &format!("Bearer {key}"))
+            .set("Accept", "text/event-stream")
+            .call()
+            .expect("the stream should open");
+        assert_eq!(
+            res.header("content-type").unwrap_or(""),
+            "text/event-stream",
+            "not an SSE stream"
+        );
+        let mut buf = String::new();
+        let mut r = std::io::BufReader::new(res.into_reader());
+        // Enough lines to carry one notification; the read timeout ends it.
+        for _ in 0..12 {
+            let mut line = String::new();
+            use std::io::BufRead;
+            if r.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            buf.push_str(&line);
+            if buf.contains("notifications/resources/updated") {
+                break;
+            }
+        }
+        buf
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    // In another room: must not reach scout.
+    let (is_err, _) = call(
+        &h.url,
+        &elsewhere_key,
+        "create_thread",
+        json!({"title": "not yours", "body": "x", "tag": "FYI"}),
+    );
+    assert!(!is_err);
+
+    // In scout's room: must reach it.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "yours", "body": "x", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let got = reader.join().expect("reader panicked");
+    assert!(
+        got.contains("notifications/resources/updated"),
+        "no resource notification arrived: {got:?}"
+    );
+    assert!(
+        got.contains("rivendell://thread/2"),
+        "should name scout's thread, not the other room's: {got:?}"
+    );
+    assert!(
+        !got.contains("rivendell://thread/1"),
+        "leaked a thread from a room this agent is not in: {got:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// A thread opened before the watcher existed still gets answered.
 ///
 /// This is the failure that looks exactly like a broken feature from outside:

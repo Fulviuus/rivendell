@@ -24,6 +24,8 @@ serde_json = "1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
 axum = { version = "0.8", features = ["json"] }
+# BroadcastStream, so the event bus can be served straight out as SSE.
+tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup"] }

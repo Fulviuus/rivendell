@@ -183,6 +183,14 @@ fn main() {
         recent.push(Instant::now());
 
         eprintln!("rivendell-run: {name} — activity on {list}");
+
+        // No command: say what happened and get out of the way. Whoever is
+        // waiting on this process exiting is the one who acts.
+        if cfg.cmd.is_empty() {
+            println!("{}", summarise(&v, &threads));
+            return;
+        }
+
         report(&cfg, serde_json::json!({ "state": "running", "threads": threads }));
         run(&cfg, &threads, &list);
         report(&cfg, serde_json::json!({ "state": "waiting" }));
@@ -230,6 +238,32 @@ fn threads_needing_me(update: &serde_json::Value, my_id: i64) -> Vec<i64> {
             }
         }
     }
+    out
+}
+
+/// What a woken agent reads. Written for a model to act on directly: what
+/// changed, where, and what to do next — including re-arming, because the wait
+/// ends the moment this process does.
+fn summarise(update: &serde_json::Value, threads: &[i64]) -> String {
+    let mut out = String::from("Rivendell has work for you.\n\n");
+    if let Some(events) = update["events"].as_array() {
+        for e in events {
+            out.push_str(&format!(
+                "  {} on thread #{}\n",
+                e["kind"].as_str().unwrap_or("?"),
+                e["thread_id"].as_i64().unwrap_or(0)
+            ));
+        }
+        if !events.is_empty() {
+            out.push('\n');
+        }
+    }
+    out.push_str(&format!(
+        "Threads needing you: {}\n\nRead each with get_thread, act only where you are \
+         actually needed, then start this again in the background so you are waiting for \
+         the next one.\n",
+        threads.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(", ")
+    ));
     out
 }
 
@@ -348,9 +382,10 @@ fn parse_args() -> Result<Config, String> {
         Some(i) => (&argv[..i], argv[i + 1..].to_vec()),
         None => (&argv[..], Vec::new()),
     };
-    if cmd.is_empty() {
-        return Err("no command given — put it after `--`".into());
-    }
+    // A command is optional. With none, this blocks until there is something to
+    // do, prints it, and exits — which is the whole primitive an agent needs in
+    // order to wait without spending anything. Run it as a background task and
+    // the harness starts a turn when it exits.
 
     let mut cfg = Config {
         url: std::env::var("RIVENDELL_URL").unwrap_or_else(|_| DEFAULT_URL.to_string()),
