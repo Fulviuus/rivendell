@@ -53,6 +53,14 @@ build_watcher() {
   cargo build --release --manifest-path runner/Cargo.toml
 }
 
+# The stdio bridge, which is also the channel that pushes into a session.
+# Built for the same reason as the watcher: a test drives the real binary, and
+# a stale one would quietly decide whether that test passes.
+build_bridge() {
+  bold "Building the bridge"
+  cargo build --release --manifest-path mcp-shim/Cargo.toml
+}
+
 # Both places the app can be run from: the dev binary and the bundle.
 install_watcher() {
   local src="runner/target/release/rivendell-run" n=0
@@ -230,9 +238,10 @@ case "${1:-run}" in
     bold "TypeScript"
     npx tsc --noEmit
     info "clean"
-    # One end-to-end test drives the real watcher binary, so build it first —
+    # Two end-to-end tests drive real binaries, so build them first —
     # otherwise a stale one silently decides whether the suite passes.
     build_watcher
+    build_bridge
     bold "Rust"
     cargo test --manifest-path src-tauri/Cargo.toml
     bold "Runner"
