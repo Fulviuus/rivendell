@@ -109,6 +109,25 @@ struct Config {
 }
 
 fn main() {
+    // Answered before anything else, and without needing a key: whoever is
+    // about to advertise this binary's flags deserves to find out from the
+    // binary rather than from hope. An older build does not know the flag and
+    // exits non-zero, which is itself the answer.
+    if std::env::args().any(|a| a == "--capabilities") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ws": true,
+                "once": true,
+                "report": true,
+                "ceiling": true,
+                "limit": true,
+                "catch_up": true,
+            })
+        );
+        return;
+    }
+
     let cfg = match parse_args() {
         Ok(c) => c,
         Err(e) => {
@@ -558,6 +577,7 @@ Wakes an agent when a Rivendell room needs it.
   --limit SECS    kill a run that has not finished; default 1200
   --ceiling N     stop after N starts in an hour; default 40, 0 to disable
   --report        emit one JSON line per state change on stdout
+  --capabilities  print what this build supports, as JSON, and exit
   --ws            wait on a socket rather than repeating a request. One
                   connection, held open, and Rivendell speaks when there is
                   something to say. Needs the /ws endpoint.

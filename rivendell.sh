@@ -51,6 +51,11 @@ preflight() {
 build_watcher() {
   bold "Building the watcher"
   cargo build --release --manifest-path runner/Cargo.toml
+  # Installed in the same breath, always. Building without installing leaves a
+  # stale copy beside the app, and the app hands that copy's path to agents —
+  # so the drift shows up as an agent being told to run a flag its binary
+  # rejects. Three separate bugs in this project have been a stale artifact.
+  install_watcher
 }
 
 # The stdio bridge, which is also the channel that pushes into a session.
@@ -69,6 +74,11 @@ install_watcher() {
              "src-tauri/target/debug/${BUNDLE_REL}/Contents/MacOS" \
              "src-tauri/target/release/${BUNDLE_REL}/Contents/MacOS"; do
     if [ -d "$dir" ]; then
+      # Removed first, deliberately. Overwriting a Mach-O in place on Apple
+      # silicon invalidates its signature and the kernel then SIGKILLs it —
+      # which presents as a binary that exits 137 with no output and no
+      # explanation. A fresh inode keeps the signature cargo gave it.
+      rm -f "$dir/rivendell-run"
       cp "$src" "$dir/rivendell-run"
       n=$((n + 1))
     fi

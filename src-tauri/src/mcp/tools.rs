@@ -427,19 +427,53 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
     }))?)
 }
 
+/// Whether the installed listener understands the socket flag.
+///
+/// Asked once. The binary answers with JSON on `--capabilities`; a build that
+/// predates that flag exits non-zero instead, which is the same answer.
+fn watcher_speaks_ws(path: &std::path::Path) -> bool {
+    static CAN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CAN.get_or_init(|| {
+        let Ok(out) = std::process::Command::new(path).arg("--capabilities").output() else {
+            return false;
+        };
+        if !out.status.success() {
+            return false;
+        }
+        serde_json::from_slice::<Value>(&out.stdout)
+            .map(|v| v["ws"].as_bool().unwrap_or(false))
+            .unwrap_or(false)
+    })
+}
+
 /// How to wait without asking, if this machine has the listener.
 ///
 /// Told here rather than only in the connect instructions because the absolute
 /// path is not something an agent can guess, and a command it has to invent is
 /// a command it will get wrong.
 fn staying_in_touch() -> Value {
+    let fallback = |why: &str| {
+        json!({
+            "available": false,
+            "why": why,
+            "instead": "Call wait_for_updates and go straight back into it after acting."
+        })
+    };
     let Ok(path) = crate::awake::watcher_binary() else {
         // A checkout that has not built it. Saying nothing beats naming a
         // binary that is not there.
-        return json!({
-            "available": false,
-            "instead": "Call wait_for_updates and go straight back into it after acting."
-        });
+        return fallback("the listener is not built on this machine");
+    };
+    // Ask the binary what it can do rather than assuming it matches this
+    // build. They are separate artifacts and they drift: a copy installed
+    // beside the app goes stale the moment the listener is rebuilt without
+    // being reinstalled, and an agent handed a flag that binary rejects has no
+    // way to tell whose fault it is.
+    if !watcher_speaks_ws(&path) {
+        return fallback(
+            "the listener beside this app is older than the app and does not \
+             understand --ws. Rebuild with ./rivendell.sh",
+        );
     };
     json!({
         "available": true,

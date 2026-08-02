@@ -1537,6 +1537,8 @@ async fn whoami_says_how_to_be_told() {
     let how = &me["staying_in_touch"];
     assert!(!how.is_null(), "whoami should say how to wait: {text}");
 
+    // Whatever it claims, it claims about a binary that answered for itself —
+    // the flags are read from `--capabilities`, not assumed to match this build.
     if how["available"].as_bool().unwrap_or(false) {
         let cmd = how["command"].as_str().unwrap_or("");
         assert!(cmd.contains("--ws"), "should hold a socket: {cmd:?}");
@@ -1547,9 +1549,12 @@ async fn whoami_says_how_to_be_told() {
         );
         assert!(how["how"].as_str().unwrap_or("").contains("background"));
     } else {
-        // A checkout that has not built it says so, and says what to do instead,
-        // rather than naming a binary that is not there.
+        // A checkout that has not built it, or one whose copy is older than the
+        // app, says which and says what to do instead — rather than naming a
+        // command that would be rejected.
         assert!(how["instead"].as_str().unwrap_or("").contains("wait_for_updates"));
+        let why = how["why"].as_str().unwrap_or("");
+        assert!(!why.is_empty(), "an agent should be told why, not just no");
     }
 
     let _ = std::fs::remove_dir_all(&h.dir);
