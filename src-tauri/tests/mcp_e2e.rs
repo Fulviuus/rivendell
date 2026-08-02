@@ -1404,6 +1404,121 @@ async fn the_stream_pushes_room_activity() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// The socket: one connection held open, and Rivendell speaks when there is
+/// something to say. No cursor, no repeated request, no timeout to tune.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_socket_is_told_without_asking() {
+    let watcher = std::path::Path::new("../runner/target/release/rivendell-run");
+    if !watcher.is_file() {
+        eprintln!("skipped: build it with `cargo build --release --manifest-path runner/Cargo.toml`");
+        return;
+    }
+
+    let h = boot("socket").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (scout, _k) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    let log = h.dir.join("ran.txt");
+    let script = h.dir.join("fake-agent");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'threads=%s\\n' \"$RIVENDELL_THREADS\" >> {}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (token, handle) = h.store.mint_live_token(scout).unwrap();
+    let mut child = std::process::Command::new(watcher)
+        .args(["--key", &token, "--url", &h.url, "--ws", "--once", "--"])
+        .arg(&script)
+        .spawn()
+        .unwrap();
+
+    // Let the socket be established before there is anything to hear, so what
+    // arrives arrives because it was pushed.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "over the wire", "body": "well?", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("nothing came down the socket");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(ran.contains("threads="), "the agent never ran — log was {ran:?}");
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// Work already waiting is volunteered the moment a socket connects, with no
+/// event to trigger it — the case a listener that only looked forward misses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_socket_hears_what_was_already_waiting() {
+    let watcher = std::path::Path::new("../runner/target/release/rivendell-run");
+    if !watcher.is_file() {
+        return;
+    }
+    let h = boot("socket-catchup").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_coder, coder_key) = mk_agent(&h, project.id, room, "dev", "CODER");
+    let (scout, _k) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    // Opened before anything is listening. This is the whole point.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "create_thread",
+        json!({"title": "nobody was connected", "body": "?", "tag": "HELP_REQUEST"}),
+    );
+    assert!(!is_err, "{text}");
+
+    let (token, handle) = h.store.mint_live_token(scout).unwrap();
+    let out = std::process::Command::new(watcher)
+        .args(["--key", &token, "--url", &h.url, "--ws", "--once"])
+        .output()
+        .expect("should exit on its own");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("Threads needing you"),
+        "should volunteer the waiting thread: {said:?} / {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    h.store.drop_live_token(&handle);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// A thread opened before the watcher existed still gets answered.
 ///
 /// This is the failure that looks exactly like a broken feature from outside:

@@ -14,6 +14,54 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+
+/// `http://host/mcp` becomes `ws://host/ws`. Derived rather than asked for, so
+/// there is one address to configure and no way to point the two halves at
+/// different servers.
+fn ws_url(http: &str) -> String {
+    let base = http.strip_suffix("/mcp").unwrap_or(http);
+    let base = base
+        .strip_prefix("http://")
+        .map(|r| format!("ws://{r}"))
+        .or_else(|| base.strip_prefix("https://").map(|r| format!("wss://{r}")))
+        .unwrap_or_else(|| base.to_string());
+    format!("{base}/ws")
+}
+
+fn connect_ws(cfg: &Config) -> Result<Socket, String> {
+    use tungstenite::client::IntoClientRequest;
+    let url = ws_url(&cfg.url);
+    let mut req = url.as_str().into_client_request().map_err(|e| e.to_string())?;
+    req.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", cfg.key)
+            .parse()
+            .map_err(|_| "the key is not valid header text".to_string())?,
+    );
+    let (socket, _) = tungstenite::connect(req).map_err(|e| match e {
+        tungstenite::Error::Http(r) if r.status() == 401 => {
+            "unauthorised — the key is unknown or revoked".to_string()
+        }
+        other => other.to_string(),
+    })?;
+    eprintln!("rivendell-run: listening on {url}");
+    Ok(socket)
+}
+
+/// Blocks until Rivendell says something. Pings and other frames are not news.
+fn read_ws(socket: &mut Socket) -> Result<serde_json::Value, String> {
+    loop {
+        match socket.read().map_err(|e| e.to_string())? {
+            tungstenite::Message::Text(t) => {
+                return serde_json::from_str(&t).map_err(|e| e.to_string())
+            }
+            tungstenite::Message::Close(_) => return Err("Rivendell closed the socket".into()),
+            _ => continue,
+        }
+    }
+}
+
 const DEFAULT_URL: &str = "http://127.0.0.1:8787/mcp";
 
 /// Distinct so a parent can tell "this looped" from "this crashed" and stop
@@ -54,6 +102,8 @@ struct Config {
     ceiling: usize,
     /// Emit one JSON line per state change, for a parent watching stdout.
     report: bool,
+    /// Hold a socket open instead of repeating a request.
+    ws: bool,
     once: bool,
     cmd: Vec<String>,
 }
@@ -73,6 +123,21 @@ fn main() {
         .timeout_read(Duration::from_secs(cfg.wait + 60))
         .timeout_connect(Duration::from_secs(10))
         .build();
+
+    // Held open for the life of the process when asked for. Everything after
+    // this is identical either way — only the waiting differs.
+    let mut socket = if cfg.ws {
+        match connect_ws(&cfg) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("rivendell-run: could not open the socket.\n  {e}");
+                eprintln!("  Needs a Rivendell with /ws. Drop --ws to wait by asking instead.");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     // Fail loudly and immediately on a bad key rather than looping in silence.
     let me = match call(&agent, &cfg, "whoami", serde_json::json!({})) {
@@ -102,20 +167,27 @@ fn main() {
     // replayed from the beginning of time. A watcher that only looked forward
     // would ignore a thread opened while nobody was watching — which is exactly
     // when one is most likely to have been opened.
-    let first = call(
-        &agent,
-        &cfg,
-        "wait_for_updates",
-        serde_json::json!({"timeout_s": 1, "watcher": true, "catch_up": true}),
-    );
-    let mut cursor = match &first {
-        Ok(v) => v["next_cursor"].as_i64().unwrap_or(0),
-        Err(e) => {
-            eprintln!("rivendell-run: could not reach Rivendell ({e}) — retrying");
-            0
-        }
+    // On a socket the server volunteers what is already waiting the moment it
+    // connects, so there is nothing to ask and no cursor to keep.
+    let mut cursor = 0i64;
+    let mut pending = if socket.is_some() {
+        None
+    } else {
+        let first = call(
+            &agent,
+            &cfg,
+            "wait_for_updates",
+            serde_json::json!({"timeout_s": 1, "watcher": true, "catch_up": true}),
+        );
+        cursor = match &first {
+            Ok(v) => v["next_cursor"].as_i64().unwrap_or(0),
+            Err(e) => {
+                eprintln!("rivendell-run: could not reach Rivendell ({e}) — retrying");
+                0
+            }
+        };
+        first.ok()
     };
-    let mut pending = first.ok();
 
     report(&cfg, serde_json::json!({ "state": "waiting", "agent": name }));
     let mut recent: Vec<Instant> = Vec::new();
@@ -128,19 +200,32 @@ fn main() {
         // The catch-up answer, first time round; a fresh poll after that.
         let v = match pending.take() {
             Some(v) => v,
-            None => match call(
-                &agent,
-                &cfg,
-                "wait_for_updates",
-                serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait, "watcher": true }),
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    // The app restarting is normal; keep the watch alive.
-                    eprintln!("rivendell-run: {e} — retrying in 5s");
-                    std::thread::sleep(Duration::from_secs(5));
-                    continue;
-                }
+            None => match socket.as_mut() {
+                Some(sock) => match read_ws(sock) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // The app restarting is ordinary. Rebuild the socket
+                        // rather than treating it as the end of the world.
+                        eprintln!("rivendell-run: {e} — reconnecting in 5s");
+                        std::thread::sleep(Duration::from_secs(5));
+                        socket = connect_ws(&cfg).ok();
+                        continue;
+                    }
+                },
+                None => match call(
+                    &agent,
+                    &cfg,
+                    "wait_for_updates",
+                    serde_json::json!({ "cursor": cursor, "timeout_s": cfg.wait, "watcher": true }),
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // The app restarting is normal; keep the watch alive.
+                        eprintln!("rivendell-run: {e} — retrying in 5s");
+                        std::thread::sleep(Duration::from_secs(5));
+                        continue;
+                    }
+                },
             },
         };
         cursor = v["next_cursor"].as_i64().unwrap_or(cursor);
@@ -395,6 +480,7 @@ fn parse_args() -> Result<Config, String> {
         limit: 20 * 60,
         ceiling: 40,
         report: false,
+        ws: false,
         once: false,
         cmd,
     };
@@ -436,6 +522,10 @@ fn parse_args() -> Result<Config, String> {
                 cfg.report = true;
                 i += 1;
             }
+            "--ws" => {
+                cfg.ws = true;
+                i += 1;
+            }
             "--once" => {
                 cfg.once = true;
                 i += 1;
@@ -468,6 +558,9 @@ Wakes an agent when a Rivendell room needs it.
   --limit SECS    kill a run that has not finished; default 1200
   --ceiling N     stop after N starts in an hour; default 40, 0 to disable
   --report        emit one JSON line per state change on stdout
+  --ws            wait on a socket rather than repeating a request. One
+                  connection, held open, and Rivendell speaks when there is
+                  something to say. Needs the /ws endpoint.
   --once          handle one wake-up and exit — useful for trying it out
 
 The command runs once per wake-up. In its arguments, {{prompt}} becomes an

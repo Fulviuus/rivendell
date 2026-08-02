@@ -10,6 +10,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{header, HeaderMap, StatusCode},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -34,6 +35,11 @@ pub struct Running {
 pub async fn serve(state: Arc<McpState>, port: u16) -> std::io::Result<Running> {
     let app = Router::new()
         .route("/mcp", post(handle_post).get(handle_get).delete(handle_delete))
+        // Deliberately its own path rather than an upgrade on /mcp: this is not
+        // MCP and does not pretend to be. It is a plain socket that says when
+        // an agent has work, for anything that would rather hold a connection
+        // than repeat a request.
+        .route("/ws", get(handle_ws))
         .route("/health", get(|| async { "ok" }))
         .with_state(state);
 
@@ -53,6 +59,92 @@ pub async fn serve(state: Arc<McpState>, port: u16) -> std::io::Result<Running> 
 }
 
 // The GET/DELETE verbs exist in the streamable-HTTP spec for server-initiated
+/// A socket that stays open and says when this agent has something to do.
+///
+/// The long poll answers the same question by repeating a request; this answers
+/// it by holding a connection. Neither can wake a model on its own — that takes
+/// something outside the model noticing and acting, whether that is a process
+/// exiting or a host injecting a turn. What this removes is the repeating.
+async fn handle_ws(
+    State(state): State<Arc<McpState>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(crate::auth::strip_bearer)
+        .unwrap_or("");
+    let ctx = match state.store.authenticate(token) {
+        Ok(Some(c)) => c,
+        Ok(None) => return unauthorized("unknown or revoked agent key"),
+        Err(e) => return unauthorized(&format!("could not check that key: {e}")),
+    };
+    upgrade.on_upgrade(move |socket| watch_socket(socket, state, ctx))
+}
+
+async fn watch_socket(mut socket: WebSocket, state: Arc<McpState>, ctx: AgentCtx) {
+    let store = &state.store;
+    tracing::info!("ws: {} is listening", ctx.name);
+
+    // Whatever was already waiting, before anything new happens. A listener
+    // that only looked forward would miss a thread opened while nobody was
+    // connected — which is exactly when one is most likely to be opened.
+    if let Ok(waiting) = store.wakeable_open_threads(ctx.id) {
+        if !waiting.is_empty() {
+            let msg = json!({ "needs_you": waiting, "reason": "already waiting for you" });
+            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    let mut rx = store.events.subscribe();
+    loop {
+        tokio::select! {
+            // The client hanging up, or saying anything at all — we read only
+            // to notice the close.
+            incoming = socket.recv() => match incoming {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                _ => continue,
+            },
+            event = rx.recv() => {
+                let notice = match event {
+                    Ok(n) => n,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("ws: {} lagged past {n} events", ctx.name);
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                // Its own doing never counts, or a reply wakes its own author.
+                if notice.actor_agent_id == Some(ctx.id) {
+                    continue;
+                }
+                let Some(thread) = notice.thread_id else { continue };
+                // The server decides what is worth waking for: not resolved,
+                // room not paused, reply budget intact. Same rule as the poll,
+                // because there should only be one.
+                let worth_it = store
+                    .wakeable_threads(ctx.id, &[thread])
+                    .unwrap_or_default();
+                if worth_it.is_empty() {
+                    continue;
+                }
+                tracing::info!("ws: telling {} about thread {thread}", ctx.name);
+                let msg = json!({
+                    "needs_you": worth_it,
+                    "events": [{ "kind": notice.kind, "thread_id": thread }],
+                });
+                if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    tracing::info!("ws: {} stopped listening", ctx.name);
+}
+
 /// The server-to-client stream: every change in the agent's rooms, pushed as
 /// spec-shaped MCP notifications.
 ///
