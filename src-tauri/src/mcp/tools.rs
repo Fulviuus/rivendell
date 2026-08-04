@@ -222,7 +222,8 @@ pub fn common_tools() -> Vec<Value> {
     ]
 }
 
-pub fn coder_tools() -> Vec<Value> {
+/// Opening, steering and closing a thread. Everyone gets these.
+pub fn thread_tools() -> Vec<Value> {
     vec![
         tool(
             "create_thread",
@@ -421,7 +422,6 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
         "project": ctx.project_name,
         "project_folder": ctx.folder_path,
         "rooms": rooms,
-        "can_open_threads": ctx.is_coder(),
         "tags": tags,
         "staying_in_touch": staying_in_touch(),
     }))?)

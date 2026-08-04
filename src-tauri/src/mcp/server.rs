@@ -430,11 +430,12 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
     })
 }
 
-fn tools_list(ctx: &AgentCtx) -> Vec<Value> {
+fn tools_list(_ctx: &AgentCtx) -> Vec<Value> {
+    // Everyone sees everything. There is no longer a kind of agent that may
+    // only answer: whoever has something worth asking can open a thread, and
+    // whoever opened one can close it.
     let mut list = tools::common_tools();
-    if ctx.is_coder() {
-        list.extend(tools::coder_tools());
-    }
+    list.extend(tools::thread_tools());
     list
 }
 

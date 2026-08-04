@@ -472,6 +472,20 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             tracing::info!("migrated: added {table}.{column}");
         }
     }
+
+    // A thread used to move itself: opened, then AWAITING_REPLIES while the
+    // assistants answered, then NEEDS_CODER when the coder got the ball back.
+    // A council has no such hand-off — a thread is open until whoever called it
+    // says otherwise — so anything caught mid-flight is simply open. Nothing is
+    // lost: both statuses already meant "live".
+    let moved = conn.execute(
+        "UPDATE threads SET status='OPEN'
+         WHERE status IN ('AWAITING_REPLIES','NEEDS_CODER')",
+        [],
+    )?;
+    if moved > 0 {
+        tracing::info!("migrated: {moved} thread(s) were mid-handover and are now open");
+    }
     Ok(())
 }
 
@@ -826,7 +840,7 @@ fn seed_tags(conn: &Connection) -> rusqlite::Result<()> {
             "HELP_REQUEST",
             "Help request",
             "sky",
-            "The coder is stuck and wants a concrete way forward. Read the attached context, diagnose the actual cause, and give a specific fix — code, not advice. If you cannot tell from the context provided, say exactly what you would need and reply with verdict NEEDS_INFO rather than guessing.",
+            "Whoever opened this is stuck and wants a concrete way forward. Read the attached context, diagnose the actual cause, and give a specific fix — code, not advice. If you cannot tell from the context provided, say exactly what you would need and reply with verdict NEEDS_INFO rather than guessing.",
             1,
             r#"["ANSWERED","NEEDS_INFO"]"#,
             1,

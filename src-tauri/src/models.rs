@@ -243,10 +243,12 @@ pub struct NewReply {
 
 pub const SEVERITIES: &[&str] = &["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 
+/// A thread is open while it is being discussed and closed when whoever opened
+/// it says so. Nothing in between: the two statuses that used to sit there
+/// described a hand-off between a coder and its assistants, and there is no
+/// such hand-off in a council.
 pub const STATUSES: &[&str] = &[
     "OPEN",
-    "AWAITING_REPLIES",
-    "NEEDS_CODER",
     "RESOLVED",
     "BLOCKED",
     "WONTFIX",
@@ -256,6 +258,8 @@ pub const STATUSES: &[&str] = &[
 /// and the room's unread badge cannot disagree about what Open means — a badge
 /// showing 3 next to a list of 2 is exactly the kind of confusion worth
 /// designing out.
+// Kept as a list rather than `= 'OPEN'` so a database written before the
+// council still reads correctly until its rows are migrated.
 pub const OPEN_STATUS_SQL: &str = "('OPEN','AWAITING_REPLIES','NEEDS_CODER')";
 pub const DONE_STATUS_SQL: &str = "('RESOLVED','WONTFIX')";
 

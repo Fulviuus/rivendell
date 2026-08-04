@@ -82,7 +82,8 @@ async fn activity_arrives_as_a_channel_event_without_being_asked() {
             rivendell_lib::models::NewThread {
                 room_id: room,
                 title: "does this reach you on its own".into(),
-                body: "well?".into(),
+                // It has to ask, or there is rightly nothing to push.
+                body: "@scout well?".into(),
                 tag: "HELP_REQUEST".into(),
                 mentions: vec![],
                 context: vec![],

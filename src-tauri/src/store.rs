@@ -67,10 +67,12 @@ pub struct AgentCtx {
 }
 
 impl AgentCtx {
-    pub fn is_coder(&self) -> bool {
-        self.role == "CODER" || self.role == "HUMAN"
-    }
-    /// The human sitting in front of the app is never rate-limited or paused out.
+    /// The person sitting in front of the app, as opposed to a program.
+    ///
+    /// The only distinction left between participants, and the only one that
+    /// was ever about something real. `role` still holds CODER or ASSISTANT for
+    /// agents made before the council — nothing reads it, and the column stays
+    /// because rebuilding this table is how the project lost data once.
     pub fn is_human(&self) -> bool {
         self.role == "HUMAN"
     }
@@ -1000,6 +1002,10 @@ impl Store {
              WHERE t.id IN ({holes})
                AND t.status NOT IN ('RESOLVED','WONTFIX')
                AND r.paused=0
+               AND (EXISTS(SELECT 1 FROM thread_mentions x
+                            WHERE x.thread_id=t.id AND x.agent_id=?1)
+                    OR t.author_agent_id=?1)
+
                AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id AND agent_id=?1)
                      < r.max_replies_per_agent
                AND (SELECT COUNT(*) FROM messages WHERE thread_id=t.id)
@@ -1035,6 +1041,9 @@ impl Store {
              JOIN room_members m ON m.room_id=t.room_id AND m.agent_id=?1
              WHERE t.status NOT IN ('RESOLVED','WONTFIX')
                AND r.paused=0
+               AND (EXISTS(SELECT 1 FROM thread_mentions x
+                            WHERE x.thread_id=t.id AND x.agent_id=?1)
+                    OR t.author_agent_id=?1)
                AND COALESCE(
                      (SELECT agent_id FROM messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1),
                      t.author_agent_id
@@ -1138,8 +1147,17 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
 
+        // `@everyone` calls the whole room in, which is the difference between
+        // asking a question of someone and asking it of the council.
+        let everyone = names.iter().any(|n| n.eq_ignore_ascii_case("everyone"));
+        let wanted_names: Vec<String> = if everyone {
+            roster.iter().map(|(_, n)| n.clone()).collect()
+        } else {
+            names
+        };
+
         let mut added = Vec::new();
-        for wanted in names {
+        for wanted in wanted_names {
             let Some((id, name)) = roster
                 .iter()
                 .find(|(_, n)| n.eq_ignore_ascii_case(&wanted))
@@ -1159,74 +1177,12 @@ impl Store {
         }
 
         if !added.is_empty() {
-            // Reopening the window is the point: someone was just invited.
             conn.execute(
-                "UPDATE threads
-                 SET gather_started_at = CASE WHEN gather_started_at IS NULL
-                                              THEN NULL ELSE ?1 END,
-                     status = CASE WHEN status IN ('RESOLVED','WONTFIX') THEN status
-                                   ELSE 'AWAITING_REPLIES' END
-                 WHERE id=?2",
+                "UPDATE threads SET updated_at=?1 WHERE id=?2",
                 params![now(), thread_id],
             )?;
         }
         Ok(added)
-    }
-
-    /// Whether a thread is ready to go back to the coder.
-    ///
-    /// The rule, in order:
-    ///
-    ///   1. Nobody has answered yet -> wait. Indefinitely. A question with no
-    ///      takers is not a failure, and nothing should time out before a
-    ///      single agent has spoken.
-    ///   2. The first agent reply opens a window for the others to say they
-    ///      are working on it. While that window is open, keep waiting.
-    ///   3. Once it closes, the participants are whoever spoke or claimed.
-    ///      Anyone still silent is ignored.
-    ///   4. Wait for the outstanding claims to turn into replies — but a claim
-    ///      that goes quiet past the room's timeout is dropped, so one agent
-    ///      that died mid-job cannot hold the thread for ever.
-    fn is_ready_for_coder(conn: &Connection, thread_id: i64) -> Result<bool> {
-        let (room_id, gather_started_at): (i64, Option<String>) = conn.query_row(
-            "SELECT room_id, gather_started_at FROM threads WHERE id=?1",
-            params![thread_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-
-        // (1) nobody has answered
-        let Some(started) = gather_started_at else {
-            return Ok(false);
-        };
-
-        let (claim_window, claim_timeout): (i64, i64) = conn.query_row(
-            "SELECT claim_window_secs, response_timeout_secs FROM rooms WHERE id=?1",
-            params![room_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-
-        // (2) the window for others to put their hand up
-        let now = chrono::Utc::now();
-        let window_closes =
-            (now - chrono::Duration::seconds(claim_window.max(0))).to_rfc3339();
-        if started.as_str() > window_closes.as_str() {
-            return Ok(false);
-        }
-
-        // (3)/(4) claims that are still live and still unanswered
-        let stale_before = (now - chrono::Duration::seconds(claim_timeout.max(0))).to_rfc3339();
-        let outstanding: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM thread_claims c
-             JOIN agents a ON a.id=c.agent_id
-             WHERE c.thread_id=?1
-               AND a.revoked_at IS NULL
-               AND c.claimed_at > ?2
-               AND NOT EXISTS(SELECT 1 FROM messages m
-                               WHERE m.thread_id=?1 AND m.agent_id=c.agent_id)",
-            params![thread_id, stale_before],
-            |r| r.get(0),
-        )?;
-        Ok(outstanding == 0)
     }
 
     /// An assistant announcing that it has picked a thread up. Re-claiming
@@ -1266,58 +1222,9 @@ impl Store {
         Ok(())
     }
 
-    /// Threads whose gather window has closed with nothing outstanding are handed back
-    /// to the coder. Runs on a timer so this happens without anyone asking.
-    pub fn sweep_stalled_threads(&self) -> Result<usize> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id FROM threads WHERE status='AWAITING_REPLIES'",
-        )?;
-        let ids: Vec<i64> = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        drop(stmt);
-
-        let mut notices = Vec::new();
-        for id in ids {
-            if !Self::is_ready_for_coder(&conn, id)? {
-                continue;
-            }
-            let room: Option<i64> = conn
-                .query_row("SELECT room_id FROM threads WHERE id=?1", params![id], |r| r.get(0))
-                .optional()?;
-            conn.execute(
-                "UPDATE threads SET status='NEEDS_CODER', updated_at=?1 WHERE id=?2",
-                params![now(), id],
-            )?;
-            notices.push(Self::append_event(
-                &conn,
-                room,
-                Some(id),
-                "thread.status",
-                None,
-                serde_json::json!({
-                    "status": "NEEDS_CODER",
-                    "reason": "everyone still working on it has answered",
-                }),
-            )?);
-        }
-        drop(conn);
-        let n = notices.len();
-        for notice in notices {
-            self.publish(notice);
-        }
-        Ok(n)
-    }
-
     // ----------------------------------------------------------- threads ---
 
     pub fn create_thread(&self, author: &AgentCtx, input: NewThread) -> Result<i64> {
-        if !author.is_coder() {
-            return Err(Error::Forbidden(
-                "only a CODER may open a thread; assistants reply".into(),
-            ));
-        }
         {
             let conn = self.lock();
             Self::require_member(&conn, author.id, input.room_id)?;
@@ -1341,9 +1248,7 @@ impl Store {
         let git_dirty = git::is_dirty(&root);
 
         let tx = guard.transaction()?;
-        // FYI threads expect nothing; everything else waits, for as long as it
-        // takes, until an agent answers.
-        let status = if tag.expects_replies { "AWAITING_REPLIES" } else { "OPEN" };
+        let status = "OPEN";
         tx.execute(
             "INSERT INTO threads(room_id,author_agent_id,title,body,tag,status,git_ref,git_dirty,
                                  created_at,updated_at)
@@ -1462,12 +1367,72 @@ impl Store {
         Ok(())
     }
 
+    /// Only the agents a thread actually asked may speak in it.
+    ///
+    /// This is what stops a council of five turning every question into five
+    /// answers. Being asked means one of three things: the thread named you,
+    /// somebody named you in a message since, or you opened it yourself. A
+    /// person is never refused — they are the one convening.
+    ///
+    /// Anyone can be brought in at any time by naming them, which is the
+    /// intended way past this and worth saying in the refusal.
+    fn require_asked(conn: &Connection, actor: &AgentCtx, thread_id: i64) -> Result<()> {
+        if actor.is_human() {
+            return Ok(());
+        }
+        let asked: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM thread_mentions WHERE thread_id=?1 AND agent_id=?2
+                 UNION ALL
+                 SELECT 1 FROM threads WHERE id=?1 AND author_agent_id=?2
+             )",
+            params![thread_id, actor.id],
+            |r| r.get(0),
+        )?;
+        if asked {
+            return Ok(());
+        }
+        Err(Error::Forbidden(format!(
+            "thread {thread_id} did not ask you, so it is not yours to answer. If you have \
+             something it needs, ask someone in it to bring you in by name — or leave it to \
+             the agents who were asked."
+        )))
+    }
+
+    /// Whoever called the council together decides when it is finished — or the
+    /// person, who can always overrule.
+    fn require_author_or_human(
+        conn: &Connection,
+        actor: &AgentCtx,
+        thread_id: i64,
+    ) -> Result<()> {
+        if actor.is_human() {
+            return Ok(());
+        }
+        let author: i64 = conn.query_row(
+            "SELECT author_agent_id FROM threads WHERE id=?1",
+            params![thread_id],
+            |r| r.get(0),
+        )?;
+        if author == actor.id {
+            return Ok(());
+        }
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM agents WHERE id=?1",
+                params![author],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "whoever opened it".into());
+        Err(Error::Forbidden(format!(
+            "only {name} opened this thread, so only {name} can close it. Say what you think \
+             in a reply instead."
+        )))
+    }
+
     pub fn set_thread_status(&self, actor: &AgentCtx, thread_id: i64, status: &str) -> Result<()> {
         if !STATUSES.contains(&status) {
             return Err(Error::Invalid(format!("unknown status `{status}`")));
-        }
-        if !actor.is_coder() {
-            return Err(Error::Forbidden("only a CODER may change thread status".into()));
         }
         if status == "RESOLVED" {
             return Err(Error::Invalid(
@@ -1482,6 +1447,7 @@ impl Store {
             |r| r.get(0),
         )?;
         Self::require_member(&conn, actor.id, room_id)?;
+        Self::require_author_or_human(&conn, actor, thread_id)?;
         conn.execute(
             "UPDATE threads SET status=?1, updated_at=?2 WHERE id=?3",
             params![status, now(), thread_id],
@@ -1507,10 +1473,9 @@ impl Store {
         summary: &str,
         status: &str,
     ) -> Result<Option<String>> {
-        if !actor.is_coder() {
-            return Err(Error::Forbidden(
-                "only a CODER may resolve a thread".into(),
-            ));
+        {
+            let conn = self.lock();
+            Self::require_author_or_human(&conn, actor, thread_id)?;
         }
         if !["RESOLVED", "WONTFIX", "BLOCKED"].contains(&status) {
             return Err(Error::Invalid(format!("cannot resolve to `{status}`")));
@@ -1757,6 +1722,7 @@ impl Store {
             .ok_or_else(|| Error::NotFound(format!("thread {}", input.thread_id)))?;
 
         Self::require_member(&guard, actor.id, room_id)?;
+        Self::require_asked(&guard, actor, input.thread_id)?;
 
         // --- rails -------------------------------------------------------
         if !actor.is_human() {
@@ -1815,7 +1781,7 @@ impl Store {
         }
 
         let tag = Self::tag(&guard, &tag_key)?;
-        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref(), &actor.role)?;
+        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref())?;
         let severity = Self::validate_severity(input.severity.as_deref())?;
 
         let refs = input.refs.unwrap_or(serde_json::json!([]));
@@ -1841,24 +1807,12 @@ impl Store {
         )?;
         let message_id = tx.last_insert_rowid();
 
-        // The first *agent* answer starts the clock for everyone else. A human
-        // posting does not: the question is still unanswered.
-        if actor.role == "ASSISTANT" {
-            tx.execute(
-                "UPDATE threads SET gather_started_at=?1
-                 WHERE id=?2 AND gather_started_at IS NULL",
-                params![created, input.thread_id],
-            )?;
-        }
-
-        let next_status = if Self::is_ready_for_coder(&tx, input.thread_id)? {
-            "NEEDS_CODER"
-        } else {
-            "AWAITING_REPLIES"
-        };
+        // Only the clock moves. A discussion is finished when the person who
+        // called it says so, not when something decides everyone has had a
+        // turn — so a reply changes nothing but the ordering.
         tx.execute(
-            "UPDATE threads SET status=?1, updated_at=?2 WHERE id=?3 AND status NOT IN ('RESOLVED','WONTFIX')",
-            params![next_status, created, input.thread_id],
+            "UPDATE threads SET updated_at=?1 WHERE id=?2",
+            params![created, input.thread_id],
         )?;
 
         index_message(&tx, message_id, room_id, &input.body)?;
@@ -1888,8 +1842,7 @@ impl Store {
                 "message_id": message_id,
                 "verdict": verdict,
                 "severity": severity,
-                "status": next_status,
-                "role": actor.role,
+                "status": "OPEN",
                 // Which of the two wrote this: a run Rivendell started, or a
                 // session someone is sitting in front of. They share an
                 // identity by design, so without recording it there is no way
@@ -1924,7 +1877,7 @@ impl Store {
     }
 
 
-    fn validate_verdict(tag: &Tag, raw: Option<&str>, role: &str) -> Result<Option<String>> {
+    fn validate_verdict(tag: &Tag, raw: Option<&str>) -> Result<Option<String>> {
         match raw.map(str::trim) {
             Some(v) if !v.is_empty() => {
                 let v = v.to_ascii_uppercase();
@@ -1940,16 +1893,7 @@ impl Store {
                 }
                 Ok(Some(v))
             }
-            _ => {
-                if tag.requires_verdict && role == "ASSISTANT" {
-                    return Err(Error::Invalid(format!(
-                        "a {} reply must carry a verdict: one of {}",
-                        tag.key,
-                        tag.verdict_options.join(", ")
-                    )));
-                }
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 
@@ -2020,7 +1964,7 @@ impl Store {
         }
 
         let tag = Self::tag(&guard, &tag_key)?;
-        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref(), &actor.role)?;
+        let verdict = Self::validate_verdict(&tag, input.verdict.as_deref())?;
         let severity = Self::validate_severity(input.severity.as_deref())?;
         let refs = input.refs.clone().unwrap_or(serde_json::json!([]));
         let edited = now();
@@ -2225,7 +2169,7 @@ SELECT t.id, t.room_id, r.name, t.title, t.tag, t.status, t.author_agent_id, a.n
        (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS reply_count,
        (SELECT COUNT(DISTINCT m.agent_id) FROM messages m
           JOIN agents ag ON ag.id=m.agent_id
-         WHERE m.thread_id=t.id AND ag.role='ASSISTANT') AS responder_count,
+         WHERE m.thread_id=t.id AND m.agent_id <> t.author_agent_id) AS responder_count,
        -- Claimed, still live, still unanswered. Recomputed per row rather than
        -- stored, so it cannot go stale between the timer and a read.
        (SELECT COUNT(*) FROM thread_claims c

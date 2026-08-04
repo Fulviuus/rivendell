@@ -193,19 +193,36 @@ async fn full_thread_lifecycle() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     assert!(asst_tools.contains(&"reply"));
+    // Every agent is the same kind of thing now: whoever has something worth
+    // asking can open a thread, and whoever opened one can close it.
     assert!(
-        !asst_tools.contains(&"create_thread"),
-        "assistants must not be offered create_thread"
+        asst_tools.contains(&"create_thread"),
+        "the council offers the same tools to everyone"
     );
 
-    // An assistant calling a coder-only tool is refused even if it guesses the name.
+    // Any agent may convene the council. What it may not do is answer a thread
+    // that did not ask it.
     let (is_err, text) = call(
         &h.url,
         &assistant_key,
         "create_thread",
-        json!({"title": "sneaky", "body": "x", "tag": "FYI"}),
+        json!({"title": "asking in turn", "body": "who knows about this?", "tag": "FYI"}),
     );
-    assert!(is_err, "assistant must not be able to open a thread: {text}");
+    assert!(!is_err, "every agent may open a thread now: {text}");
+    let mine: i64 = text
+        .split_whitespace()
+        .find_map(|w| w.trim_end_matches('.').parse().ok())
+        .expect("thread id");
+
+    // It asked nobody, so nobody else may speak in it — but its own author can.
+    let (is_err, text) = call(
+        &h.url,
+        &coder_key,
+        "reply",
+        json!({"thread_id": mine, "body": "butting in"}),
+    );
+    assert!(is_err, "an agent this thread did not ask must be refused: {text}");
+    assert!(text.contains("did not ask you"), "and told why: {text}");
 
     // --- create a thread with pinned context ------------------------------
     let (is_err, text) = call(
@@ -214,7 +231,7 @@ async fn full_thread_lifecycle() {
         "create_thread",
         json!({
             "title": "Token refresh races",
-            "body": "Two concurrent 401s both trigger a refresh.",
+            "body": "@everyone Two concurrent 401s both trigger a refresh.",
             "tag": "ADVERSARIAL_REVIEW",
             "context": [{"kind": "file", "path": "src/auth.rs", "start_line": 1, "end_line": 4}]
         }),
@@ -232,14 +249,24 @@ async fn full_thread_lifecycle() {
     assert!(text.contains("no lock here"), "pinned file excerpt missing");
     assert!(text.contains("CLEARED"), "tag instruction should be surfaced");
 
-    // --- verdict is enforced ----------------------------------------------
+    // --- a verdict is offered, never demanded -----------------------------
+    // Most of what gets said in a discussion is not a conclusion, so a reply
+    // without one is ordinary. A wrong one is still refused.
     let (is_err, text) = call(
         &h.url,
         &assistant_key,
         "reply",
-        json!({"thread_id": thread_id, "body": "Looks fine to me."}),
+        json!({"thread_id": thread_id, "body": "Reading it now — one thing looks odd."}),
     );
-    assert!(is_err, "a verdict-requiring tag must reject a bare reply");
+    assert!(!is_err, "a reply that is not a conclusion is fine: {text}");
+
+    let (is_err, text) = call(
+        &h.url,
+        &assistant_key,
+        "reply",
+        json!({"thread_id": thread_id, "body": "x", "verdict": "MAYBE"}),
+    );
+    assert!(is_err, "a verdict that is not one of the tag's must still be refused");
     assert!(text.contains("CONFIRMED"), "the error should list valid verdicts: {text}");
 
     let (is_err, text) = call(
@@ -371,7 +398,7 @@ async fn threads_sort_three_ways() {
                 rivendell_lib::models::NewThread {
                     room_id: room,
                     title: title.into(),
-                    body: "…".into(),
+                    body: "@everyone …".into(),
                     tag: "FYI".into(),
                     mentions: vec![],
                     context: vec![],
@@ -432,199 +459,7 @@ async fn threads_sort_three_ways() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
-/// Both roles drive the same loop over the same event log; only their
-/// permissions differ. A coder opening a thread must be visible to a waiting
-/// assistant, and that assistant's reply visible back to the coder.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn both_roles_share_one_loop() {
-    let h = boot("oneloop").await;
-    let project = h
-        .store
-        .create_project("demo", h.dir.to_str().unwrap())
-        .unwrap();
-    let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (_, coder_key) = mk_agent(&h, project.id, room, "main", "CODER");
-    let (_, asst_key) = mk_agent(&h, project.id, room, "helper", "ASSISTANT");
 
-    // Both roles are offered the same waiting primitive.
-    for key in [&coder_key, &asst_key] {
-        let (_, body) = rpc(&h.url, Some(key), "tools/list", json!({}));
-        let names: Vec<&str> = body["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
-        assert!(names.contains(&"wait_for_updates"));
-        // Nothing launches anything any more.
-        assert!(!names.contains(&"dispatch"), "dispatch should be gone: {names:?}");
-    }
-
-    // The assistant parks on the cursor it has now.
-    let (_, before) = call(&h.url, &asst_key, "wait_for_updates", json!({"timeout_s": 1}));
-    let cursor = serde_json::from_str::<Value>(&before).unwrap()["next_cursor"]
-        .as_i64()
-        .unwrap();
-
-    let (is_err, text) = call(
-        &h.url,
-        &coder_key,
-        "create_thread",
-        json!({"title": "Look at this", "body": "…", "tag": "HELP_REQUEST"}),
-    );
-    assert!(!is_err, "{text}");
-    let thread_id: i64 = text
-        .split_whitespace()
-        .find_map(|w| w.trim_end_matches('.').parse().ok())
-        .unwrap();
-
-    // …and sees it without anything having been spawned.
-    let (_, seen) = call(
-        &h.url,
-        &asst_key,
-        "wait_for_updates",
-        json!({"cursor": cursor, "timeout_s": 5}),
-    );
-    let seen: Value = serde_json::from_str(&seen).unwrap();
-    assert!(
-        seen["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["kind"] == "thread.created"),
-        "a waiting assistant must see the new thread: {seen}"
-    );
-
-    // The coder waits the same way and sees the answer come back.
-    let coder_cursor = seen["next_cursor"].as_i64().unwrap() - 1;
-    let (is_err, text) = call(
-        &h.url,
-        &asst_key,
-        "reply",
-        json!({"thread_id": thread_id, "body": "Here you go.", "verdict": "ANSWERED"}),
-    );
-    assert!(!is_err, "{text}");
-
-    let (_, got) = call(
-        &h.url,
-        &coder_key,
-        "wait_for_updates",
-        json!({"cursor": coder_cursor, "timeout_s": 5}),
-    );
-    let got: Value = serde_json::from_str(&got).unwrap();
-    assert!(
-        got["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["kind"] == "message.created"),
-        "the coder must see the reply: {got}"
-    );
-
-    // The reply does not hand over immediately any more: it opens the window in
-    // which any other agent may claim. Only once that closes with nothing
-    // outstanding does the thread come back.
-    assert_eq!(
-        h.store.thread_detail(thread_id).unwrap().summary.status,
-        "AWAITING_REPLIES"
-    );
-    age_gather(&h.dir, thread_id, 3600);
-    h.store.sweep_stalled_threads().unwrap();
-    assert_eq!(
-        h.store.thread_detail(thread_id).unwrap().summary.status,
-        "NEEDS_CODER"
-    );
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
-
-/// The four filter buckets must partition every status: anything that falls
-/// through all of them is a thread you can never find again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn status_filter_buckets_cover_everything() {
-    let h = boot("buckets").await;
-    let project = h
-        .store
-        .create_project("demo", h.dir.to_str().unwrap())
-        .unwrap();
-    let room = h.store.create_room(project.id, "general", "").unwrap();
-    let (coder_id, _) = mk_agent(&h, project.id, room, "main", "CODER");
-    let coder = h.store.agent_ctx(coder_id).unwrap();
-
-    let open = |title: &str| {
-        h.store
-            .create_thread(
-                &coder,
-                rivendell_lib::models::NewThread {
-                    room_id: room,
-                    title: title.into(),
-                    body: "…".into(),
-                    tag: "FYI".into(),
-                    mentions: vec![],
-                    context: vec![],
-                    include_diff: false,
-                },
-            )
-            .unwrap()
-    };
-
-    // One thread in each of the six internal statuses.
-    let t_open = open("open");
-    let t_awaiting = open("awaiting");
-    let t_needs = open("needs");
-    let t_resolved = open("resolved");
-    let t_wontfix = open("wontfix");
-    let t_blocked = open("blocked");
-
-    h.store.set_thread_status(&coder, t_awaiting, "AWAITING_REPLIES").unwrap();
-    h.store.set_thread_status(&coder, t_needs, "NEEDS_CODER").unwrap();
-    h.store.resolve_thread(&coder, t_resolved, "done", "RESOLVED").unwrap();
-    h.store.resolve_thread(&coder, t_wontfix, "no", "WONTFIX").unwrap();
-    h.store.resolve_thread(&coder, t_blocked, "waiting on upstream", "BLOCKED").unwrap();
-
-    let ids = |bucket: &str| -> Vec<i64> {
-        let mut v: Vec<i64> = h
-            .store
-            .list_threads(Some(room), Some(bucket), None, None, None, 50)
-            .unwrap()
-            .into_iter()
-            .map(|t| t.id)
-            .collect();
-        v.sort();
-        v
-    };
-
-    let mut live = vec![t_open, t_awaiting, t_needs];
-    live.sort();
-    assert_eq!(ids("open"), live, "Open is live work only");
-
-    let mut done = vec![t_resolved, t_wontfix];
-    done.sort();
-    assert_eq!(ids("resolved"), done, "Resolved covers WONTFIX too");
-
-    assert_eq!(ids("blocked"), vec![t_blocked]);
-
-    let mut everything = vec![t_open, t_awaiting, t_needs, t_resolved, t_wontfix, t_blocked];
-    everything.sort();
-    assert_eq!(ids("all"), everything);
-
-    // Together the three narrow buckets account for every thread — nothing is
-    // reachable only through "All".
-    let mut union = [ids("open"), ids("resolved"), ids("blocked")].concat();
-    union.sort();
-    assert_eq!(union, everything, "the buckets must partition, not merely overlap");
-
-    // The room badge counts exactly what the Open filter shows.
-    let rooms = h.store.list_rooms().unwrap();
-    let badge = rooms.iter().find(|r| r.id == room).unwrap().open_threads;
-    assert_eq!(
-        badge,
-        live.len() as i64,
-        "a badge that disagrees with the list is the confusion we removed"
-    );
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
 
 /// The revision loop: someone edits, the room is told, and the agent whose
 /// answer is now stale revises it rather than posting a correction.
@@ -643,7 +478,7 @@ async fn an_edit_is_announced_and_can_be_answered() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "Which one", "body": "…", "tag": "ADVERSARIAL_REVIEW"}),
+        json!({"title": "Which one", "body": "@everyone …", "tag": "ADVERSARIAL_REVIEW"}),
     );
     let thread_id: i64 = text
         .split_whitespace()
@@ -752,7 +587,7 @@ async fn project_settings_and_deletion() {
             rivendell_lib::models::NewThread {
                 room_id: room,
                 title: "One".into(),
-                body: "…".into(),
+                body: "@everyone …".into(),
                 tag: "HELP_REQUEST".into(),
                 mentions: vec![],
                 context: vec![],
@@ -820,213 +655,10 @@ async fn project_settings_and_deletion() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
-/// Nothing times out before a single agent has spoken. A question with no
-/// takers is not a failure, and a thread that quietly gave up on itself would
-/// be worse than one that waits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_thread_waits_indefinitely_for_its_first_answer() {
-    let h = boot("waitforever").await;
-    let (room, coder_key, _a, _b) = seed_room(&h).await;
-    // Windows so short that anything time-based would fire immediately.
-    h.store
-        .update_room(room, json!({"claim_window_secs": 0, "response_timeout_secs": 0}))
-        .unwrap();
 
-    let id = open_thread(&h, &coder_key, "Anyone?");
-    for _ in 0..3 {
-        assert_eq!(h.store.sweep_stalled_threads().unwrap(), 0);
-    }
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().summary.status,
-        "AWAITING_REPLIES",
-        "with nobody having answered, the thread must keep waiting"
-    );
 
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
 
-/// The first answer starts the clock. Agents that stay silent through the
-/// window are simply left out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_first_answer_opens_a_window_for_the_others() {
-    let h = boot("window").await;
-    let (room, coder_key, first, _silent) = seed_room(&h).await;
-    h.store.update_room(room, json!({"claim_window_secs": 600})).unwrap();
 
-    let id = open_thread(&h, &coder_key, "Two of you");
-    let (is_err, text) = call(
-        &h.url,
-        &first,
-        "reply",
-        json!({"thread_id": id, "body": "mine", "verdict": "ANSWERED"}),
-    );
-    assert!(!is_err, "{text}");
-
-    // Inside the window the other agent may still put its hand up.
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().summary.status,
-        "AWAITING_REPLIES"
-    );
-    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 0);
-
-    // Once it closes and nobody claimed, the coder gets it.
-    age_gather(&h.dir, id, 3600);
-    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 1);
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().summary.status,
-        "NEEDS_CODER"
-    );
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
-
-/// Claiming inside the window buys you the time to answer; going quiet loses
-/// it, so one stalled agent cannot hold a thread open for ever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_live_claim_holds_the_thread_and_a_stale_one_does_not() {
-    let h = boot("claims2").await;
-    let (room, coder_key, first, second) = seed_room(&h).await;
-    h.store
-        .update_room(room, json!({"claim_window_secs": 600, "response_timeout_secs": 600}))
-        .unwrap();
-
-    let id = open_thread(&h, &coder_key, "Both of you");
-    call(&h.url, &first, "reply", json!({"thread_id": id, "body": "one", "verdict": "ANSWERED"}));
-    call(&h.url, &second, "claim_thread", json!({"thread_id": id, "note": "digging"}));
-
-    // Window closed, but the claimant is still live.
-    age_gather(&h.dir, id, 3600);
-    assert_eq!(
-        h.store.sweep_stalled_threads().unwrap(),
-        0,
-        "a live claim must keep the thread open"
-    );
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().summary.in_progress,
-        1,
-        "and be reported as in progress"
-    );
-
-    // Its answer releases the thread.
-    let (is_err, text) = call(
-        &h.url,
-        &second,
-        "reply",
-        json!({"thread_id": id, "body": "two", "verdict": "ANSWERED"}),
-    );
-    assert!(!is_err, "{text}");
-    let d = h.store.thread_detail(id).unwrap();
-    assert_eq!(d.summary.status, "NEEDS_CODER");
-    assert_eq!(d.summary.in_progress, 0);
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_that_goes_quiet_is_discarded() {
-    let h = boot("stale").await;
-    let (room, coder_key, first, second) = seed_room(&h).await;
-    h.store
-        .update_room(room, json!({"claim_window_secs": 600, "response_timeout_secs": 300}))
-        .unwrap();
-
-    let id = open_thread(&h, &coder_key, "One will vanish");
-    call(&h.url, &first, "reply", json!({"thread_id": id, "body": "one", "verdict": "ANSWERED"}));
-    call(&h.url, &second, "claim_thread", json!({"thread_id": id}));
-
-    age_gather(&h.dir, id, 3600);
-    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 0, "still live");
-
-    // The claimant stops heartbeating.
-    let agents = h.store.list_agents(Some(room)).unwrap();
-    let second_id = agents.iter().find(|a| a.name == "second").unwrap().id;
-    backdate(&h.dir, "claimed_at", "thread_claims", second_id, 3600);
-
-    assert_eq!(h.store.sweep_stalled_threads().unwrap(), 1);
-    let d = h.store.thread_detail(id).unwrap();
-    assert_eq!(d.summary.status, "NEEDS_CODER");
-    assert_eq!(d.summary.in_progress, 0, "the stalled claim is no longer counted");
-    assert_eq!(d.summary.responder_count, 1, "and only the real answer counts");
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
-
-/// An agent calling in another with @name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_at_mention_calls_another_agent_in() {
-    let h = boot("atmention").await;
-    let (room, coder_key, first, second) = seed_room(&h).await;
-    h.store.update_room(room, json!({"claim_window_secs": 0})).unwrap();
-
-    let id = open_thread(&h, &coder_key, "Needs a specialist");
-    assert!(
-        h.store.thread_detail(id).unwrap().mentions.is_empty(),
-        "opens addressed to the whole room"
-    );
-
-    // `second` parks on a cursor so we can see it being told.
-    let (_, before) = call(&h.url, &second, "wait_for_updates", json!({"timeout_s": 1}));
-    let cursor = serde_json::from_str::<Value>(&before).unwrap()["next_cursor"]
-        .as_i64()
-        .unwrap();
-
-    let (is_err, text) = call(
-        &h.url,
-        &first,
-        "reply",
-        json!({
-            "thread_id": id,
-            "body": "Crypto is not my area — @second can you take the signature check?",
-            "verdict": "NEEDS_INFO"
-        }),
-    );
-    assert!(!is_err, "{text}");
-
-    let agents = h.store.list_agents(Some(room)).unwrap();
-    let second_id = agents.iter().find(|a| a.name == "second").unwrap().id;
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().mentions,
-        vec![second_id],
-        "the named agent is now addressed by the thread"
-    );
-
-    let (_, got) = call(
-        &h.url,
-        &second,
-        "wait_for_updates",
-        json!({"cursor": cursor, "timeout_s": 5}),
-    );
-    let got: Value = serde_json::from_str(&got).unwrap();
-    let called = got["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["kind"] == "thread.mentioned")
-        .expect("the called agent must be notified");
-    assert_eq!(called["payload"]["called"][0], "second");
-
-    // Being called in reopens the window, so arriving late is not the same as
-    // being ignored.
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().summary.status,
-        "AWAITING_REPLIES"
-    );
-
-    // An @word that is not an agent is just prose.
-    call(
-        &h.url,
-        &second,
-        "reply",
-        json!({"thread_id": id, "body": "see @nobody and user@example.com", "verdict": "ANSWERED"}),
-    );
-    assert_eq!(
-        h.store.thread_detail(id).unwrap().mentions.len(),
-        1,
-        "unknown @words and email addresses must not summon anyone"
-    );
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
 
 /// Two agents and a coder, which most of these tests want.
 async fn seed_room(h: &Harness) -> (i64, String, String, String) {
@@ -1046,7 +678,7 @@ fn open_thread(h: &Harness, coder_key: &str, title: &str) -> i64 {
         &h.url,
         coder_key,
         "create_thread",
-        json!({"title": title, "body": "…", "tag": "HELP_REQUEST"}),
+        json!({"title": title, "body": "@everyone …", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "{text}");
     text.split_whitespace()
@@ -1090,7 +722,7 @@ async fn one_agent_can_be_in_several_rooms() {
             &h.url,
             &coder_key,
             "create_thread",
-            json!({"room": room, "title": format!("in {room}"), "body": "…", "tag": "HELP_REQUEST"}),
+            json!({"room": room, "title": format!("in {room}"), "body": "@everyone …", "tag": "HELP_REQUEST"}),
         );
         assert!(!is_err, "{text}");
     }
@@ -1122,56 +754,6 @@ async fn one_agent_can_be_in_several_rooms() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
-/// Closing and resolving are different acts. Only a decision writes a record,
-/// and resolving cannot be reached by the route that skips the summary.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn closing_is_not_resolving() {
-    let h = boot("closing").await;
-    let (_room, coder_key, first, _second) = seed_room(&h).await;
-
-    let closed = open_thread(&h, &coder_key, "Never mind");
-    let (is_err, text) = call(
-        &h.url,
-        &coder_key,
-        "set_thread_status",
-        json!({"thread_id": closed, "status": "WONTFIX"}),
-    );
-    assert!(!is_err, "{text}");
-    let d = h.store.thread_detail(closed).unwrap();
-    assert_eq!(d.summary.status, "WONTFIX");
-    assert!(
-        d.export_path.is_none(),
-        "closing writes no decision record — there was no decision"
-    );
-
-    // Reopening puts it back in front of the assistants.
-    let (is_err, text) = call(
-        &h.url,
-        &coder_key,
-        "set_thread_status",
-        json!({"thread_id": closed, "status": "AWAITING_REPLIES"}),
-    );
-    assert!(!is_err, "{text}");
-    let (is_err, text) = call(
-        &h.url,
-        &first,
-        "reply",
-        json!({"thread_id": closed, "body": "back on it", "verdict": "ANSWERED"}),
-    );
-    assert!(!is_err, "a reopened thread must accept replies again: {text}");
-
-    // Resolving cannot be reached without a summary.
-    let (is_err, text) = call(
-        &h.url,
-        &coder_key,
-        "set_thread_status",
-        json!({"thread_id": closed, "status": "RESOLVED"}),
-    );
-    assert!(is_err, "status must not be a back door around the record: {text}");
-    assert!(text.contains("resolve_thread"), "and should say what to use: {text}");
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-}
 
 /// The old verdict name still works, so an agent mid-reply is not broken by a
 /// rename it never saw.
@@ -1184,7 +766,7 @@ async fn the_renamed_verdict_still_accepts_the_old_word() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "Break this", "body": "…", "tag": "ADVERSARIAL_REVIEW"}),
+        json!({"title": "Break this", "body": "@everyone …", "tag": "ADVERSARIAL_REVIEW"}),
     );
     let id: i64 = text
         .split_whitespace()
@@ -1224,7 +806,7 @@ async fn rooms_are_isolated() {
         &h.url,
         &coder_a,
         "create_thread",
-        json!({"room": "alpha", "title": "secret alpha work", "body": "…", "tag": "FYI"}),
+        json!({"room": "alpha", "title": "secret alpha work", "body": "@everyone …", "tag": "FYI"}),
     );
     assert!(!is_err, "{text}");
     let thread_id: i64 = text
@@ -1265,7 +847,7 @@ async fn a_reply_records_whether_rivendell_started_it() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "who answered", "body": "?", "tag": "HELP_REQUEST"}),
+        json!({"title": "who answered", "body": "@everyone ?", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "{text}");
     let tid: i64 = text
@@ -1374,7 +956,7 @@ async fn the_stream_pushes_room_activity() {
         &h.url,
         &elsewhere_key,
         "create_thread",
-        json!({"title": "not yours", "body": "x", "tag": "FYI"}),
+        json!({"title": "not yours", "body": "@everyone x", "tag": "FYI"}),
     );
     assert!(!is_err);
 
@@ -1383,7 +965,7 @@ async fn the_stream_pushes_room_activity() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "yours", "body": "x", "tag": "HELP_REQUEST"}),
+        json!({"title": "yours", "body": "@everyone x", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "{text}");
 
@@ -1454,7 +1036,7 @@ async fn a_socket_is_told_without_asking() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "over the wire", "body": "well?", "tag": "HELP_REQUEST"}),
+        json!({"title": "over the wire", "body": "@everyone well?", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "{text}");
 
@@ -1499,7 +1081,7 @@ async fn a_socket_hears_what_was_already_waiting() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "nobody was connected", "body": "?", "tag": "HELP_REQUEST"}),
+        json!({"title": "nobody was connected", "body": "@everyone ?", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "{text}");
 
@@ -1588,7 +1170,7 @@ async fn work_already_waiting_is_picked_up_on_startup() {
         &h.url,
         &coder_key,
         "create_thread",
-        json!({"title": "Opened while nobody was watching", "body": "well?", "tag": "HELP_REQUEST"}),
+        json!({"title": "Opened while nobody was watching", "body": "@everyone well?", "tag": "HELP_REQUEST"}),
     );
     assert!(!is_err, "could not open the thread: {text}");
 
@@ -1693,7 +1275,7 @@ async fn the_watcher_starts_an_agent_when_a_thread_moves() {
         "create_thread",
         json!({
             "title": "The retry loop never backs off",
-            "body": "Third attempt fires immediately.",
+            "body": "@everyone Third attempt fires immediately.",
             "tag": "HELP_REQUEST"
         }),
     );

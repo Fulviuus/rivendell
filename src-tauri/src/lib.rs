@@ -62,21 +62,6 @@ pub fn run() {
                 }
             });
 
-            // Hand stalled threads back to the coder without waiting for
-            // someone to poke the app.
-            let sweeper = store.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
-                loop {
-                    tick.tick().await;
-                    match sweeper.sweep_stalled_threads() {
-                        Ok(n) if n > 0 => tracing::info!("{n} thread(s) stopped waiting"),
-                        Err(e) => tracing::warn!("sweep failed: {e}"),
-                        _ => {}
-                    }
-                }
-            });
-
             // Bridge the event log into the webview.
             let handle = app.handle().clone();
             let mut rx = store.events.subscribe();
