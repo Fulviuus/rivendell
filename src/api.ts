@@ -3,6 +3,7 @@ import type {
   Agent,
   AgentProfile,
   AwakeStatus,
+  ConnectedAgent,
   ContextInput,
   EventNotice,
   NewAgentKey,
@@ -16,6 +17,7 @@ import type {
 
 export const api = {
   serverInfo: () => invoke<{ url: string; listening: boolean }>("server_info"),
+  listConnections: () => invoke<ConnectedAgent[]>("list_connections"),
 
   listProjects: () => invoke<Project[]>("list_projects"),
   createProject: (name: string, folder: string) =>

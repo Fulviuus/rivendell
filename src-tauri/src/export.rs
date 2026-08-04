@@ -84,7 +84,7 @@ pub fn render(t: &ThreadDetail) -> String {
         out.push_str("_No replies._\n\n");
     }
     for m in &t.messages {
-        let mut head = format!("### {} ({})", m.agent_name, m.agent_role);
+        let mut head = format!("### {}", m.agent_name);
         if let Some(v) = &m.verdict {
             head.push_str(&format!(" — **{v}**"));
         }

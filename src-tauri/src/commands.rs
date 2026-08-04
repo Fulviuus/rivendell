@@ -50,6 +50,14 @@ impl AppState {
     }
 }
 
+/// Agents on the wire right now — holding the long poll, the wake socket or
+/// the notification stream — plus anyone heard from in the last few minutes,
+/// each joined with the project it is listening to.
+#[tauri::command]
+pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<crate::presence::ConnectedAgent>> {
+    state.store.connected_agents()
+}
+
 // -------------------------------------------------------------- projects ---
 
 #[tauri::command]

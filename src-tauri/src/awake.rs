@@ -213,12 +213,11 @@ impl Supervisor {
             })
             .collect();
 
-        // An assistant reviews; only the coder edits. The seeded Claude profile
-        // asks for `acceptEdits`, which is right for a coder and wrong for
-        // everyone else, and a profile cannot tell the two apart. Nobody
-        // expects turning on a switch called "awake" to authorise unattended
-        // writes to their working tree.
-        if ctx.role != "CODER" {
+        // Nobody expects turning on a switch called "awake" to authorise
+        // unattended writes to their working tree. The seeded Claude profile
+        // asks for `acceptEdits`; a person can hand that out deliberately, but
+        // it is not something an agent should inherit by being started.
+        if !ctx.is_human() {
             for a in args.iter_mut() {
                 if a == "acceptEdits" {
                     *a = "default".into();
@@ -250,7 +249,6 @@ impl Supervisor {
             .env("RIVENDELL_KEY", &token)
             .env("RIVENDELL_URL", &url)
             .env("RIVENDELL_AGENT", &ctx.name)
-            .env("RIVENDELL_ROLE", &ctx.role)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -460,7 +458,7 @@ impl Supervisor {
     pub async fn set_awake(self: &Arc<Self>, agent_id: i64, on: bool) -> Result<()> {
         if on {
             let ctx = self.store.agent_ctx(agent_id)?;
-            if ctx.role == "HUMAN" {
+            if ctx.is_human() {
                 return Err(Error::Invalid("you are not something Rivendell starts".into()));
             }
             // Fail here rather than at the first event, so the toggle refusing

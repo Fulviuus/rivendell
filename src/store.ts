@@ -5,6 +5,7 @@ import type {
   Agent,
   AgentProfile,
   AwakeStatus,
+  ConnectedAgent,
   EventNotice,
   Project,
   Room,
@@ -35,6 +36,8 @@ interface State {
   toast: { kind: "error" | "info"; text: string } | null;
   /** Live run state by agent id, pushed from the supervisor. */
   awake: Record<number, AwakeStatus>;
+  /** Who is holding a connection to the listener, pushed on its own channel. */
+  connections: ConnectedAgent[];
 
   boot: () => Promise<void>;
   selectRoom: (id: number | null) => Promise<void>;
@@ -44,6 +47,7 @@ interface State {
   refreshAgents: () => Promise<void>;
   refreshThread: () => Promise<void>;
   refreshAwake: () => Promise<void>;
+  refreshConnections: () => Promise<void>;
   setFilters: (f: { status?: string; tag?: string; sort?: ThreadSort }) => Promise<void>;
   notify: (kind: "error" | "info", text: string) => void;
 }
@@ -61,6 +65,7 @@ export const useStore = create<State>((set, get) => ({
   threadId: null,
   thread: null,
   awake: {},
+  connections: [],
   statusFilter: "open",
   tagFilter: "all",
   sortBy: "last_reply",
@@ -104,6 +109,11 @@ export const useStore = create<State>((set, get) => ({
         await s.refreshRooms();
       }
       if (n.kind.startsWith("agent.")) await s.refreshAgents();
+      // The connected list carries names and project details, so a rename
+      // must reach it without waiting for the agent to reconnect.
+      if (n.kind.startsWith("agent.") || n.kind.startsWith("project.")) {
+        await s.refreshConnections();
+      }
       if (n.room_id !== null && n.room_id !== s.roomId) return;
       await s.refreshThreads();
       if (n.thread_id !== null && n.thread_id === s.threadId) await s.refreshThread();
@@ -120,6 +130,11 @@ export const useStore = create<State>((set, get) => ({
       if (s.trouble) get().notify("error", s.trouble);
     });
     await get().refreshAwake();
+
+    // Presence rides its own channel too — the payload is just a nudge, the
+    // list itself is fetched so it is always the joined, current view.
+    await listen("rivendell://presence", () => void get().refreshConnections());
+    await get().refreshConnections();
   },
 
   selectRoom: async (id) => {
@@ -154,6 +169,10 @@ export const useStore = create<State>((set, get) => ({
   refreshAwake: async () => {
     const rows = await api.awakeStatus();
     set({ awake: Object.fromEntries(rows.map((r) => [r.agent_id, r])) });
+  },
+
+  refreshConnections: async () => {
+    set({ connections: await api.listConnections() });
   },
 
   refreshThread: async () => {

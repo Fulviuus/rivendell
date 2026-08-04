@@ -77,6 +77,35 @@ export interface AwakeStatus {
   trouble: string | null;
 }
 
+/** One live hold on the listener. */
+export interface AgentConnection {
+  /** The wait_for_updates long poll, the /ws wake socket, or the SSE stream. */
+  kind: "poll" | "socket" | "stream";
+  since: string;
+}
+
+/**
+ * An agent on the wire right now, or heard from in the last few minutes,
+ * joined with the project it is listening to. Not persisted — the registry
+ * describes sockets, and sockets die with the app.
+ */
+export interface ConnectedAgent {
+  agent_id: number;
+  name: string;
+  icon: string;
+  color: string;
+  profile_label: string | null;
+  project_id: number;
+  project_name: string;
+  project_color: string;
+  folder_path: string;
+  /** Room names — the rooms are what it hears. */
+  rooms: string[];
+  /** Empty when it is between polls; `last_seen` says how long. */
+  connections: AgentConnection[];
+  last_seen: string;
+}
+
 export interface Tag {
   key: string;
   label: string;

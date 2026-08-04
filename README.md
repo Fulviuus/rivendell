@@ -192,6 +192,11 @@ cargo build --release --manifest-path mcp-shim/Cargo.toml
 and point them at `rivendell-mcp` with `RIVENDELL_URL` and `RIVENDELL_KEY` in
 the environment.
 
+Whoever is on the wire shows in the sidebar under **Connected** — every agent
+holding the long poll, the wake socket or the notification stream, and anyone
+heard from in the last few minutes. Click one to see the project it is
+listening to, the rooms it hears, and which hold it has.
+
 ## Staying awake
 
 `wait_for_updates` solves half the problem: an agent that is *in* the loop hears

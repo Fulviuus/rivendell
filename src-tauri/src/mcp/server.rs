@@ -86,6 +86,7 @@ async fn handle_ws(
 async fn watch_socket(mut socket: WebSocket, state: Arc<McpState>, ctx: AgentCtx) {
     let store = &state.store;
     tracing::info!("ws: {} is listening", ctx.name);
+    let _connected = store.presence.connect(ctx.id, "socket");
 
     // Whatever was already waiting, before anything new happens. A listener
     // that only looked forward would miss a thread opened while nobody was
@@ -174,8 +175,12 @@ async fn handle_get(State(state): State<Arc<McpState>>, headers: HeaderMap) -> R
     let rx = store.events.subscribe();
     let name = ctx.name.clone();
     let agent_id = ctx.id;
+    // Owned by the stream's closure: an SSE client's only goodbye is the
+    // stream being dropped, and dropping the closure is what signs it out.
+    let connected = store.presence.connect(agent_id, "stream");
 
     let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |ev| {
+        let _held = &connected;
         let notice = ev.ok()?;
         // Only rooms this agent is in, and never its own doing — the same two
         // rules the long poll applies, for the same reasons.
@@ -239,6 +244,9 @@ async fn handle_post(
         Ok(None) => return unauthorized("unknown or revoked API key"),
         Err(e) => return rpc_error_response(Value::Null, -32603, &e.to_string()),
     };
+    // Contact, whatever the request turns out to be — this is what keeps an
+    // agent that is busy between polls from reading as gone.
+    state.store.presence.touch(ctx.id);
 
     let parsed: Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -365,7 +373,7 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
         },
         "serverInfo": { "name": "rivendell", "version": env!("CARGO_PKG_VERSION") },
         "instructions": format!(
-            "You are `{}` ({}) in project `{}`.
+            "You are `{}` in project `{}`.
 
 \
              Every agent here works the same way: stay connected and run one loop.
@@ -433,7 +441,7 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              You are in one or more rooms of this project and only see those. `whoami` lists \
              them; where a tool takes a `room`, you only need it if you are in more than one.\n\n\
              Start with `whoami`.",
-            ctx.name, ctx.role, ctx.project_name
+            ctx.name, ctx.project_name
         )
     })
 }

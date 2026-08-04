@@ -13,6 +13,9 @@ use tokio::sync::broadcast;
 pub struct Store {
     conn: Mutex<Connection>,
     pub events: broadcast::Sender<EventNotice>,
+    /// Who is holding a connection to the listener right now. In memory only,
+    /// registered and released by the MCP handlers themselves.
+    pub presence: std::sync::Arc<crate::presence::Presence>,
     /// Credentials for processes Rivendell started itself, keyed by digest.
     ///
     /// Only `sha256(key)` is ever persisted, so the app genuinely cannot read
@@ -92,6 +95,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             events,
+            presence: crate::presence::Presence::new(),
             live_tokens: Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -614,7 +618,9 @@ impl Store {
             );
             ps.push(r.into());
         }
-        sql.push_str(" ORDER BY CASE a.role WHEN 'HUMAN' THEN 0 WHEN 'CODER' THEN 1 ELSE 2 END, a.name");
+        // You first, then everyone else alphabetically. There is no rank left
+        // to sort by, and inventing one would be the whole problem again.
+        sql.push_str(" ORDER BY CASE a.role WHEN 'HUMAN' THEN 0 ELSE 1 END, a.name");
 
         let mut stmt = conn.prepare(&sql)?;
         let out = stmt
@@ -637,6 +643,61 @@ impl Store {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// The presence registry joined with who each agent actually is: name and
+    /// face, the project it is listening to, and the rooms it hears. Rows are
+    /// looked up fresh rather than snapshotted at connect time, so a rename
+    /// shows up without waiting for the agent to reconnect.
+    pub fn connected_agents(&self) -> Result<Vec<crate::presence::ConnectedAgent>> {
+        let present = self.presence.snapshot();
+        if present.is_empty() {
+            return Ok(Vec::new());
+        }
+        let agents = self.list_agents(None)?;
+        let projects = self.list_projects()?;
+        let rooms = self.list_rooms()?;
+
+        let mut out = Vec::new();
+        for p in present {
+            // Deleted while its socket was still open — the registry will
+            // notice when the connection dies; until then there is nobody to
+            // show.
+            let Some(agent) = agents.iter().find(|a| a.id == p.agent_id) else {
+                continue;
+            };
+            let Some(project) = projects.iter().find(|pr| pr.id == agent.project_id) else {
+                continue;
+            };
+            let joined = self.rooms_for(agent.id)?;
+            let room_names = rooms
+                .iter()
+                .filter(|r| joined.contains(&r.id))
+                .map(|r| r.name.clone())
+                .collect();
+            out.push(crate::presence::ConnectedAgent {
+                agent_id: agent.id,
+                name: agent.name.clone(),
+                icon: agent.icon.clone(),
+                color: agent.color.clone(),
+                profile_label: agent.profile_label.clone(),
+                project_id: project.id,
+                project_name: project.name.clone(),
+                project_color: project.color.clone(),
+                folder_path: project.folder_path.clone(),
+                rooms: room_names,
+                connections: p.connections,
+                last_seen: p.last_seen,
+            });
+        }
+        // Holding a connection outranks having held one; names keep the list
+        // from reshuffling every time a poll breathes.
+        out.sort_by(|a, b| {
+            (a.connections.is_empty())
+                .cmp(&b.connections.is_empty())
+                .then_with(|| a.name.cmp(&b.name))
+        });
         Ok(out)
     }
 

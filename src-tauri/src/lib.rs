@@ -8,6 +8,7 @@ pub mod fsjail;
 pub mod git;
 pub mod mcp;
 pub mod models;
+pub mod presence;
 pub mod store;
 
 use commands::AppState;
@@ -59,6 +60,25 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 while let Ok(s) = rx.recv().await {
                     let _ = handle.emit("rivendell://awake", s);
+                }
+            });
+
+            // Who is connected rides its own channel for the same reason run
+            // state does: it is the user's business, not the room's. An idle
+            // agent also leaves and re-enters the poll in one breath, so the
+            // burst is left to settle and said once — otherwise the list
+            // would flicker on every cycle.
+            let handle = app.handle().clone();
+            let mut rx = store.presence.changed.subscribe();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    while rx.try_recv().is_ok() {}
+                    let _ = handle.emit("rivendell://presence", ());
                 }
             });
 
@@ -119,6 +139,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::server_info,
+            commands::list_connections,
             commands::list_projects,
             commands::create_project,
             commands::update_project,

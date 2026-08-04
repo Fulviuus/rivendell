@@ -5,6 +5,7 @@ import logoLight from "../assets/logo.png";
 import { api, errText } from "../api";
 import { useStore } from "../store";
 import { Button, Field, Icon, Input, Modal, swatchFor, Textarea, type AgentColor } from "../ui";
+import { ConnectedAgents } from "./ConnectedAgents";
 import { ProjectSettings } from "./ProjectSettings";
 import { RoomSettings } from "./RoomSettings";
 import type { Project } from "../types";
@@ -144,6 +145,8 @@ export function Sidebar() {
           </div>
         ))}
       </div>
+
+      <ConnectedAgents />
 
       <div className="space-y-1 border-t border-line p-2">
         <Button

@@ -420,7 +420,6 @@ fn whoami(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "agent_id": ctx.id,
         "name": ctx.name,
-        "role": ctx.role,
         "project": ctx.project_name,
         "project_folder": ctx.folder_path,
         "rooms": rooms,
@@ -524,7 +523,7 @@ fn list_agents(store: &Arc<Store>, ctx: &AgentCtx) -> Result<String> {
             json!({
                 "agent_id": a.id,
                 "name": a.name,
-                "role": a.role,
+                "is_you": a.role == "HUMAN",
                 "kind": a.profile_label,
                 "note": a.system_note,
                 "active": a.revoked_at.is_none(),
@@ -595,6 +594,10 @@ fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<Stri
 
 async fn wait_for_updates(state: &Arc<McpState>, ctx: &AgentCtx, args: &Value) -> Result<String> {
     let store = &state.store;
+    // Held for the whole call, blocking included: while an agent is in here it
+    // is connected in the only sense that matters, and every way out of this
+    // function drops the guard.
+    let _connected = store.presence.connect(ctx.id, "poll");
     // A supervised run was started to deal with named threads and is billing
     // the whole time it sits here. Parking it for an hour would turn one
     // wake-up into an hour-long session that answers nothing, so it gets long
@@ -855,7 +858,7 @@ fn render_thread(store: &Arc<Store>, d: &crate::models::ThreadDetail) -> Result<
         out.push_str("_None yet._\n\n");
     }
     for m in &d.messages {
-        let mut head = format!("### {} ({})", m.agent_name, m.agent_role);
+        let mut head = format!("### {}", m.agent_name);
         if let Some(v) = &m.verdict {
             head.push_str(&format!(" — {v}"));
         }

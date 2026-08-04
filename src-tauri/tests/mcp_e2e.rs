@@ -1142,6 +1142,40 @@ async fn whoami_says_how_to_be_told() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// Nothing an agent can read tells it it has a rank.
+///
+/// The badge in the app was cosmetic; this is the surface that matters. An
+/// agent that is told its role is CODER will behave like one, whatever the
+/// rules underneath now say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_rank_is_visible_to_an_agent() {
+    let h = boot("norank").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (_id, key) = mk_agent(&h, project.id, room, "scout", "ASSISTANT");
+
+    for (method, params) in [
+        ("initialize", json!({})),
+        ("tools/call", json!({"name": "whoami", "arguments": {}})),
+        ("tools/call", json!({"name": "list_agents", "arguments": {}})),
+    ] {
+        let (code, body) = rpc(&h.url, Some(&key), method, params.clone());
+        assert_eq!(code, 200, "{params}");
+        let text = body.to_string();
+        for word in ["CODER", "ASSISTANT", "\"role\""] {
+            assert!(
+                !text.contains(word),
+                "{method} {params} still shows {word} to an agent: {text}"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// A thread opened before the watcher existed still gets answered.
 ///
 /// This is the failure that looks exactly like a broken feature from outside:
@@ -1396,6 +1430,76 @@ async fn revoked_keys_stop_working() {
     assert_eq!(code, 200);
     let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));
     assert_eq!(code, 401, "the superseded key must no longer authenticate");
+
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn presence_tracks_who_is_on_the_wire() {
+    let h = boot("presence").await;
+    let project = h
+        .store
+        .create_project("demo", h.dir.to_str().unwrap())
+        .unwrap();
+    let room = h.store.create_room(project.id, "general", "").unwrap();
+    let (agent_id, key) = mk_agent(&h, project.id, room, "watcher", "ASSISTANT");
+
+    assert!(
+        h.store.connected_agents().unwrap().is_empty(),
+        "nobody has connected yet, so nobody should be listed"
+    );
+
+    // A plain tool call is contact, but holds nothing open.
+    let (code, _) = rpc(&h.url, Some(&key), "initialize", json!({}));
+    assert_eq!(code, 200);
+    let rows = h.store.connected_agents().unwrap();
+    let row = rows.iter().find(|r| r.agent_id == agent_id).expect("contact should list the agent");
+    assert!(row.connections.is_empty(), "initialize is not a held connection");
+
+    // Hold the poll from a real client thread, like an agent in its loop.
+    let url = h.url.clone();
+    let poll_key = key.clone();
+    let held = std::thread::spawn(move || {
+        rpc(
+            &url,
+            Some(&poll_key),
+            "tools/call",
+            json!({"name": "wait_for_updates", "arguments": {"timeout_s": 2}}),
+        )
+    });
+
+    // The connection shows up while the poll is blocked server-side, joined
+    // with what the agent is listening to.
+    let mut seen = false;
+    for _ in 0..40 {
+        let rows = h.store.connected_agents().unwrap();
+        if let Some(row) = rows.iter().find(|r| !r.connections.is_empty()) {
+            assert_eq!(row.agent_id, agent_id);
+            assert_eq!(row.connections[0].kind, "poll");
+            assert_eq!(row.project_name, "demo", "the row must say which project it listens to");
+            assert_eq!(row.rooms, vec!["general".to_string()], "and which rooms it hears");
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(seen, "a held poll never appeared as a connection");
+
+    let (code, _) = held.join().unwrap();
+    assert_eq!(code, 200);
+
+    // Letting go is the disconnect, and the contact lingers rather than the hold.
+    let mut released = false;
+    for _ in 0..40 {
+        let rows = h.store.connected_agents().unwrap();
+        let row = rows.iter().find(|r| r.agent_id == agent_id).expect("recent contact still lists it");
+        if row.connections.is_empty() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(released, "the returned poll should no longer count as held");
 
     let _ = std::fs::remove_dir_all(&h.dir);
 }
