@@ -32,7 +32,6 @@ export function NewAgentModal({
 }) {
   const { profiles, refreshAgents, notify } = useStore();
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"CODER" | "ASSISTANT">("ASSISTANT");
   const [profileId, setProfileId] = useState<string>("");
   const [note, setNote] = useState("");
   const [color, setColor] = useState("");
@@ -47,7 +46,9 @@ export function NewAgentModal({
       const key = await api.createAgent({
         projectId,
         name: name.trim(),
-        role,
+        // Everyone in a council is the same kind of thing; the value is
+        // stored only so the database's own constraint stays satisfied.
+        role: "ASSISTANT",
         profileId: profileId ? Number(profileId) : null,
         systemNote: note,
         color,
@@ -72,12 +73,6 @@ export function NewAgentModal({
               placeholder="skeptic"
               onChange={(e) => setName(e.target.value)}
             />
-          </Field>
-          <Field label="Role">
-            <Select value={role} onChange={(e) => setRole(e.target.value as "CODER" | "ASSISTANT")}>
-              <option value="ASSISTANT">Assistant — replies to threads</option>
-              <option value="CODER">Coder — opens and resolves threads</option>
-            </Select>
           </Field>
         </div>
 

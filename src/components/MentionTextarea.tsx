@@ -94,7 +94,7 @@ export function MentionTextarea({
             >
               <Avatar name={a.name} icon={a.icon} color={a.color} size={18} />
               <span className="font-medium">{a.name}</span>
-              <span className="ml-auto text-[11px] text-faint">{a.profile_label ?? a.role}</span>
+              <span className="ml-auto text-[11px] text-faint">{a.profile_label ?? ""}</span>
             </button>
           ))}
         </div>

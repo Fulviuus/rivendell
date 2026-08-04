@@ -62,7 +62,7 @@ export function ThreadView() {
   if (!thread) {
     return (
       <Empty icon="hash" title="No thread selected">
-        Pick a thread, or open a new one to put something in front of your assistants.
+        Pick a thread, or open a new one to put something in front of the council.
       </Empty>
     );
   }
@@ -128,13 +128,15 @@ export function ThreadView() {
               </span>
               {thread.title}
             </h1>
-            {/* Who the thread is addressed to. It drives the quorum, so a
-                thread reading 0/1 with two assistants in the room is only
-                explicable if you can see it asked for one of them. */}
+            {/* Who the thread asked. This is not decoration: only the agents
+                named here may answer it, so a thread that asked nobody sits
+                there in silence and the reason has to be visible. */}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11.5px]">
               <span className="text-muted">Asking</span>
               {asked.length === 0 ? (
-                <span className="text-soft">everyone in the room</span>
+                <span className="text-amber-700 dark:text-amber-400">
+                  nobody yet — @name someone in a reply to bring them in
+                </span>
               ) : (
                 asked.map((a) => (
                   <span
@@ -164,7 +166,7 @@ export function ThreadView() {
               <span>
                 {thread.responder_count === 0
                   ? "no replies yet"
-                  : `${thread.responder_count} assistant${thread.responder_count === 1 ? "" : "s"} replied`}
+                  : `${thread.responder_count} ${thread.responder_count === 1 ? "agent has" : "agents have"} replied`}
                 {thread.in_progress > 0 && ` · ${thread.in_progress} still working`}
               </span>
               {thread.cost_usd > 0 && (
@@ -219,8 +221,8 @@ export function ThreadView() {
               <Button
                 size="sm"
                 disabled={busy}
-                title="Put it back in front of the assistants"
-                onClick={() => setStatus("AWAITING_REPLIES")}
+                title="Put it back in front of the council"
+                onClick={() => setStatus("OPEN")}
               >
                 <Icon name="play" size={12} />
                 Reopen
@@ -389,9 +391,8 @@ export function ThreadView() {
 }
 
 /**
- * Who has said "I'm on it". A claim goes quiet after the room's timeout, at
- * which point the thread stops counting on that assistant — so a stale claim is
- * worth showing differently rather than hiding.
+ * Who has said "I'm on it". Presence only — it decides nothing, and a thread
+ * runs until whoever opened it says otherwise.
  */
 function WorkingOn({
   thread,
@@ -495,7 +496,8 @@ function MessageCard({
   onEdited: () => Promise<void> | void;
 }) {
   const notify = useStore((s) => s.notify);
-  const isAssistant = m.agent_role === "ASSISTANT";
+  // The one distinction left, and it is worth showing: a person said this.
+  const fromPerson = m.agent_role === "HUMAN";
   const tone = agentTone(m.agent_name, m.color);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.body);
@@ -526,9 +528,9 @@ function MessageCard({
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <Avatar name={m.agent_name} icon={m.icon} color={m.color} size={24} />
         <span className="font-semibold text-strong">{m.agent_name}</span>
-        {!isAssistant && (
+        {fromPerson && (
           <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
-            {m.agent_role}
+            you
           </span>
         )}
         {m.verdict && <VerdictChip verdict={m.verdict} severity={m.severity} />}
@@ -575,7 +577,7 @@ function MessageCard({
           />
           <div className="mt-2 flex items-center justify-between">
             <span className="text-[11.5px] text-faint">
-              assistants are told this changed and can revise their replies
+              everyone asked is told this changed and can revise their replies
             </span>
             <div className="flex gap-1.5">
               <Button size="sm" onClick={() => setEditing(false)}>
@@ -590,7 +592,7 @@ function MessageCard({
       ) : (
         <div
           className={`prose-msg rounded-xl border-l-2 p-3.5 shadow-card ring-1 ring-line ${tone.edge} ${
-            isAssistant ? `bg-card ${tone.tint}` : "bg-chip/50"
+            fromPerson ? "bg-chip/50" : `bg-card ${tone.tint}`
           }`}
           dangerouslySetInnerHTML={{ __html: renderMarkdown(m.body, mentionable) }}
         />

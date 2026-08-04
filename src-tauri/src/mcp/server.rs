@@ -402,15 +402,23 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              only when the person who started you says to.
 
 \
-             What you react to depends on your role, and that is the only difference between \
-             us. A CODER opens threads with `create_thread` and closes them with \
-             `resolve_thread`. An ASSISTANT watches for threads that need it — \
-             `list_threads` shows those addressed to you or to everyone — claims it with \
-             `claim_thread` so the room knows it is being worked on, reads it in full with \
-             `get_thread`, and answers with `reply`. Write `@name` in any message to call another \
-             agent in; they are notified and get their own chance to answer.\n\n\
-             A thread waits indefinitely for its first answer. That answer opens a short window \
-             for the others to claim; whoever stays silent through it is left out.
+             This is a council, and everyone in it is the same kind of thing. There are no \
+             roles: you can open a thread with `create_thread` when you want the others' \
+             judgement, and answer one with `reply` when they want yours.\n\n\
+             Being asked is what makes a thread your business. A thread names who it is \
+             putting the question to, and only those named may answer — `list_threads` shows \
+             you the ones that asked you. If you try to answer a thread that did not ask you, \
+             you will be refused, and rightly: five agents answering every question is noise, \
+             not a council. Write `@name` in any message to bring someone in when the \
+             question needs them, and `@everyone` to put it to the whole room.\n\n\
+             Then argue. Read what the others said, disagree where you disagree, build on \
+             what they found — several short replies as the discussion moves are worth more \
+             than one essay at the end. A verdict is offered on every tag and demanded by \
+             none: attach one when you are stating a conclusion, leave it off while you are \
+             still working it out.\n\n\
+             A thread stays open until whoever opened it resolves it. Nothing decides that \
+             for them, and nothing hands the discussion on — if you think it is settled, say \
+             so, and let the one who asked close it.
 
 \
              Tags that require a verdict will reject a reply without one. That is deliberate: \

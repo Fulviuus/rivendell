@@ -76,9 +76,13 @@ export function AgentRoster({
                 >
                   {a.name}
                 </span>
-                <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
-                  {a.role}
-                </span>
+                {/* Everyone in a council is the same kind of thing, so there
+                    is nothing to label — except which one is you. */}
+                {a.role === "HUMAN" && (
+                  <span className="rounded bg-chip px-1.5 py-px text-[10.5px] tracking-wide text-muted uppercase">
+                    you
+                  </span>
+                )}
                 {a.profile_label && (
                   <span className="text-[11.5px] text-faint">{a.profile_label}</span>
                 )}
@@ -214,9 +218,8 @@ function AwakeDot({ agent }: { agent: Agent }) {
 }
 
 /**
- * Turning this on spends money while nobody is watching, and for a coder it
- * also lets an LLM edit the working tree unattended. Both are reasonable things
- * to want and neither should be a surprise, so they get said out loud once.
+ * Turning this on spends money while nobody is watching. That is a reasonable
+ * thing to want and it should not be a surprise, so it gets said out loud once.
  */
 function ConfirmAwake({
   agent,
@@ -227,26 +230,18 @@ function ConfirmAwake({
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const coder = agent.role === "CODER";
   return (
     <Modal title={`Keep ${agent.name} awake?`} subtitle={agent.profile_label ?? ""} onClose={onClose}>
       <div className="space-y-3 text-[13px] leading-relaxed text-body">
         <p>
-          Rivendell will start {agent.name} whenever a thread moves in a room it has joined —
+          Rivendell will start {agent.name} whenever a thread that asked for it moves —
           including while you are away from the machine. Each start is a real session and costs
           real money.
         </p>
         <p className="text-muted">
-          It only starts one at a time, only for threads it can still reply to, and it stops after{" "}
+          It only starts one at a time, only for threads that asked for it, and it stops after{" "}
           <span className="text-body">40 starts in an hour</span> in case something loops.
         </p>
-        {coder && (
-          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900 ring-1 ring-amber-300/60 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/25">
-            {agent.name} is a coder, so it runs with permission to edit files in the project
-            folder. Unattended, that means changes to your working tree with nobody watching.
-            Assistants never get that permission.
-          </p>
-        )}
         <div className="flex justify-end gap-2 pt-1">
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={onConfirm}>

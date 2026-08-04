@@ -29,8 +29,8 @@ pub fn common_tools() -> Vec<Value> {
     vec![
         tool(
             "whoami",
-            "Who you are in this workspace: your agent name, role, room, project folder and the \
-             tags available. Call this first. It also returns `staying_in_touch` — how to be \
+            "Who you are in this workspace: your name, the rooms you are in, the project folder \
+             and the tags available. Call this first. It also returns `staying_in_touch` — how to be \
              told when you have work instead of asking repeatedly, with the exact command for \
              this machine.",
             obj(json!({}), &[]),
@@ -38,15 +38,16 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "list_threads",
-            "Threads in your room. Defaults to those that still need attention. Threads that \
-             mention nobody are open to every assistant; threads that mention specific agents are \
-             only listed for those agents unless you pass mentions_me=false.",
+            "Threads in your rooms. Defaults to those still open. A thread names who it is \
+             asking, and only those named may answer it — so by default you see the ones that \
+             asked you. Pass mentions_me=false to see everything, which is worth doing to know \
+             what the room is discussing, but do not answer what did not ask you.",
             obj(
                 json!({
                     "room": {"type": "string", "description": "Limit to one room. Omit to see every room you are in."},
-                    "status": {"type": "string", "description": "open (default — still live work), resolved, blocked, all, or one exact status: OPEN, AWAITING_REPLIES, NEEDS_CODER, RESOLVED, BLOCKED, WONTFIX"},
+                    "status": {"type": "string", "description": "open (default — still live work), resolved, blocked, all, or one exact status: OPEN, RESOLVED, BLOCKED, WONTFIX"},
                     "tag": {"type": "string", "description": "Filter to one tag, e.g. ADVERSARIAL_REVIEW"},
-                    "mentions_me": {"type": "boolean", "description": "Default true for assistants: only threads addressed to you or to everyone"},
+                    "mentions_me": {"type": "boolean", "description": "Default true: only threads that asked you. False shows the whole room, to read rather than to answer."},
                     "sort": {"type": "string", "enum": ["last_reply", "created", "activity"], "description": "last_reply (default) — freshest conversation first; created — newest thread first; activity — busiest first"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200}
                 }),
@@ -65,12 +66,9 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "claim_thread",
-            "Say that you are working on a thread. Do this *before* you start investigating, not \
-             after. Once the first agent answers, a short window opens in which the rest must \
-             claim; anyone silent through it is left out and the coder proceeds without them. \
-             Claiming puts you in that set. If the work runs long, call it again — each call \
-             refreshes the heartbeat, and a claim that goes quiet is dropped so one stalled agent \
-             cannot hold the thread for ever.",
+            "Say that you are looking at a thread, so the others can see it is being worked on \
+             and spend their effort elsewhere. It is a courtesy, not a lock: it reserves nothing \
+             and decides nothing, and you can reply without it.",
             obj(
                 json!({
                     "thread_id": {"type": "integer"},
@@ -82,19 +80,20 @@ pub fn common_tools() -> Vec<Value> {
         ),
         tool(
             "reply",
-            "Post a reply. Write `@name` to call another agent into the thread — use it when a \
-             question needs someone else's expertise rather than guessing; `list_agents` shows who \
-             is here. They are notified and get their own chance to answer. \
-             Tags such as ADVERSARIAL_REVIEW and SECURITY_REVIEW require a verdict \
-             and your reply will be rejected without one — the coder consumes verdicts \
-             programmatically, so choose honestly rather than hedging. Attach `refs` pointing at \
-             the exact file and line for every claim you make. You have a per-thread reply budget; \
-             when you have said what you know, stop.",
+            "Say something in a thread that asked you. This is a discussion, not a form: answer \
+             the others, disagree with them, build on what they found. Several short replies as \
+             the argument moves are better than one essay at the end. \
+             You can only speak in threads that named you — write `@name` to bring someone else \
+             in when a question needs them, and `list_agents` shows who is here. \
+             A `verdict` is offered on every tag and required by none: attach one when you are \
+             stating a conclusion, leave it off while you are still thinking. Attach `refs` \
+             pointing at the exact file and line for every claim you make. You have a per-thread \
+             reply budget; when you have said what you know, stop.",
             obj(
                 json!({
                     "thread_id": {"type": "integer"},
                     "body": {"type": "string", "description": "Markdown. Be specific and concrete; give failing inputs, not adjectives."},
-                    "verdict": {"type": "string", "description": "Required by most tags. get_thread tells you the allowed values."},
+                    "verdict": {"type": "string", "description": "Optional. Attach one when you are stating a conclusion; get_thread lists the allowed values for the tag."},
                     "severity": {"type": "string", "enum": ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]},
                     "refs": {
                         "type": "array",
@@ -116,7 +115,7 @@ pub fn common_tools() -> Vec<Value> {
         tool(
             "edit_reply",
             "Revise a reply you already posted. Use this when the thread has moved under you — the \
-             coder edits the topic or a message you were answering, and your original answer no \
+             asker edits the topic or a message you were answering, and your original answer no \
              longer fits. Editing keeps the conversation readable; posting a near-duplicate \
              correction does not, and it burns your reply budget. You can only edit your own \
              messages. Watch for `message.edited` events from wait_for_updates.",
@@ -124,7 +123,7 @@ pub fn common_tools() -> Vec<Value> {
                 json!({
                     "message_id": {"type": "integer", "description": "From get_thread."},
                     "body": {"type": "string", "description": "The full replacement text, not a diff."},
-                    "verdict": {"type": "string", "description": "Re-state it; a tag that requires one still requires it. Change it if the new context changed your mind."},
+                    "verdict": {"type": "string", "description": "Re-state it if you had one. Change it if the new context changed your mind."},
                     "severity": {"type": "string", "enum": ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]},
                     "refs": {
                         "type": "array",
@@ -227,10 +226,13 @@ pub fn thread_tools() -> Vec<Value> {
     vec![
         tool(
             "create_thread",
-            "Open a thread. The tag decides what the assistants are told to do and what shape \
+            "Open a thread — put a question to the council. Name who you are asking in `mentions` \
+             or by writing `@name` in the body: only those named may answer, and a thread that \
+             asks nobody sits there in silence. `@everyone` asks the whole room. \
+             The tag decides what those asked are told to do and what shape \
              their replies must take — pick it deliberately. Attach the code under discussion via \
              `context` or `include_diff`: it is snapshotted now, so the review stays valid even \
-             after you keep working. Connected assistants pick the thread up on their next \
+             after you keep working. Those you asked pick it up on their next \
              `wait_for_updates`; you do not need to launch anything.",
             obj(
                 json!({
@@ -259,7 +261,7 @@ pub fn thread_tools() -> Vec<Value> {
         tool(
             "update_thread",
             "Rewrite your own thread's topic — use it to fold in what you have learned while the \
-             assistants are working, so they are not reviewing a stale question.",
+             others are working, so they are not answering a stale question.",
             obj(
                 json!({"thread_id": {"type": "integer"}, "body": {"type": "string"}}),
                 &["thread_id", "body"],
@@ -288,7 +290,7 @@ pub fn thread_tools() -> Vec<Value> {
             obj(
                 json!({
                     "thread_id": {"type": "integer"},
-                    "status": {"type": "string", "enum": ["OPEN","AWAITING_REPLIES","NEEDS_CODER","BLOCKED"]}
+                    "status": {"type": "string", "enum": ["OPEN","BLOCKED"]}
                 }),
                 &["thread_id", "status"],
             ),
@@ -334,7 +336,7 @@ pub async fn call(
                 .map_err(|e| Error::Invalid(format!("bad arguments: {e}")))?;
             let id = store.reply(ctx, input)?;
             Ok(format!(
-                "Posted message {id}. The coder can see it now; do not repeat yourself."
+                "Posted message {id}. Everyone asked can see it now; do not repeat yourself."
             ))
         }
         "edit_reply" => {
@@ -362,7 +364,7 @@ pub async fn call(
             Ok(serde_json::to_string_pretty(&rows)?)
         }
 
-        // ---- coder only ----
+        // ---- opening, steering and closing ----
         "create_thread" => create_thread(store, ctx, args),
         "update_thread" => {
             let id = int_arg(&args, "thread_id")?;
@@ -489,7 +491,7 @@ fn list_threads(store: &Arc<Store>, ctx: &AgentCtx, args: &Value) -> Result<Stri
     let mentions_me = args
         .get("mentions_me")
         .and_then(|v| v.as_bool())
-        .unwrap_or(ctx.role == "ASSISTANT");
+        .unwrap_or(true);
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(50);
 
     let only = room_arg(store, ctx, args, "room")?;
@@ -586,7 +588,7 @@ fn create_thread(store: &Arc<Store>, ctx: &AgentCtx, args: Value) -> Result<Stri
 
     let thread_id = store.create_thread(ctx, input)?;
     Ok(format!(
-        "Opened thread {thread_id}. Any connected assistant will see it on its next \
+        "Opened thread {thread_id}. Everyone you asked will see it on its next \
          wait_for_updates. Call wait_for_updates yourself to be told when replies land."
     ))
 }
@@ -793,7 +795,7 @@ fn render_thread(store: &Arc<Store>, d: &crate::models::ThreadDetail) -> Result<
     let mut out = String::new();
     out.push_str(&format!("# Thread {} — {}\n\n", s.id, s.title));
     out.push_str(&format!(
-        "**Tag** {} · **Status** {} · **Opened by** {} · **Replies** {} from {} assistant(s){}\n",
+        "**Tag** {} · **Status** {} · **Opened by** {} · **Replies** {} from {} agent(s){}\n",
         s.tag,
         s.status,
         s.author_name,

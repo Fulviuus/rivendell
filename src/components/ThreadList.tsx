@@ -80,7 +80,7 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
         {threads.length === 0 ? (
           <Empty icon="spark" title="Nothing here">
             {room
-              ? "Open a thread to put something in front of your assistants."
+              ? "Open a thread to put something in front of the council."
               : "Pick a room on the left."}
           </Empty>
         ) : (
@@ -88,7 +88,7 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
             {threads.map((t) => {
               const active = t.id === threadId;
               const tag = tagByKey.get(t.tag);
-              const waiting = t.status === "AWAITING_REPLIES";
+              const waiting = t.status === "OPEN" && t.responder_count === 0;
               const done = t.status === "RESOLVED" || t.status === "WONTFIX";
 
               return (
@@ -141,7 +141,7 @@ export function ThreadList({ onNew }: { onNew: () => void }) {
                   <div className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted">
                     <StatusChip status={t.status} />
                     {!done && t.in_progress > 0 && (
-                      <span className="pulse-soft" title="Assistants that said they are working on it">
+                      <span className="pulse-soft" title="Agents that said they are working on it">
                         {t.in_progress} working
                       </span>
                     )}

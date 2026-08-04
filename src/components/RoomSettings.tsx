@@ -162,7 +162,7 @@ export function RoomSettings({ onClose }: { onClose: () => void }) {
             <p className="text-[11.5px] text-muted">
               {room.paused
                 ? "Nothing is dispatched and no agent post is accepted. You can still post."
-                : "Threads dispatch assistants automatically."}
+                : "Agents can open threads and answer the ones that ask them."}
             </p>
           </div>
           <Button size="sm" onClick={togglePause}>

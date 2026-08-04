@@ -122,7 +122,7 @@ export function Icon({
 
 /**
  * Each agent owns a colour: its avatar, and the edge and tint of everything it
- * says. Two assistants in a room read as two different voices at a glance.
+ * says. Two agents in a room read as two different voices at a glance.
  * Set explicitly in agent settings; agents with no choice fall back to a stable
  * hash of their name so a fresh room is still legible.
  */
@@ -333,9 +333,6 @@ export function TagChip({ color, label }: { color: string; label: string }) {
 
 const STATUS_TONE: Record<ThreadStatus, string> = {
   OPEN: "bg-chip text-soft",
-  AWAITING_REPLIES:
-    "bg-indigo-100 text-indigo-800 dark:bg-indigo-500/12 dark:text-indigo-300",
-  NEEDS_CODER: "bg-amber-200/70 text-amber-900 dark:bg-amber-500/15 dark:text-amber-300",
   RESOLVED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/12 dark:text-emerald-300",
   BLOCKED: "bg-rose-100 text-rose-800 dark:bg-rose-500/12 dark:text-rose-300",
   WONTFIX: "bg-chip text-muted",
@@ -343,8 +340,6 @@ const STATUS_TONE: Record<ThreadStatus, string> = {
 
 const STATUS_LABEL: Record<ThreadStatus, string> = {
   OPEN: "Open",
-  AWAITING_REPLIES: "Awaiting replies",
-  NEEDS_CODER: "Replied",
   RESOLVED: "Resolved",
   BLOCKED: "Blocked",
   WONTFIX: "Won't fix",

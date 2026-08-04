@@ -1,9 +1,8 @@
-export type Role = "CODER" | "ASSISTANT" | "HUMAN";
+/** The only distinction left: a person, or a program. */
+export type Role = "HUMAN" | "ASSISTANT";
 
 export type ThreadStatus =
   | "OPEN"
-  | "AWAITING_REPLIES"
-  | "NEEDS_CODER"
   | "RESOLVED"
   | "BLOCKED"
   | "WONTFIX";
@@ -27,7 +26,7 @@ export interface Room {
   paused: boolean;
   max_replies_per_agent: number;
   max_thread_messages: number;
-  /** Seconds a thread waits on an assistant that has shown no sign of life. */
+  /** Unused since threads stopped moving themselves. */
   response_timeout_secs: number;
   cost_cap_usd: number;
   /** After the first agent answers, seconds the others get to claim. */
@@ -194,8 +193,6 @@ export interface ContextInput {
 
 export const STATUS_LABEL: Record<ThreadStatus, string> = {
   OPEN: "Open",
-  AWAITING_REPLIES: "Awaiting replies",
-  NEEDS_CODER: "Needs you",
   RESOLVED: "Resolved",
   BLOCKED: "Blocked",
   WONTFIX: "Won't fix",

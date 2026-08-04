@@ -27,12 +27,13 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
   );
   // Agents live in rooms, not projects. When this room has none it is almost
   // always because they are in a sibling room, so say which — telling someone
-  // "no assistants here" without that is just restating the problem.
+  // "nobody here" without that is just restating the problem.
   const [elsewhere, setElsewhere] = useState<{ room: string; names: string[] }[]>([]);
   const [busy, setBusy] = useState(false);
 
   const tag = useMemo(() => tags.find((t) => t.key === tagKey), [tags, tagKey]);
-  const assistants = agents.filter((a) => a.role === "ASSISTANT" && !a.revoked_at);
+  // Everyone but you: a thread is a question, and you are the one asking.
+  const askable = agents.filter((a) => a.role !== "HUMAN" && !a.revoked_at);
   // Who @-completion can actually offer: anyone here but you.
   const mentionable = agents.filter((a) => a.role !== "HUMAN" && !a.revoked_at);
 
@@ -50,7 +51,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
         const found = [];
         for (const r of siblings) {
           const names = (await api.listAgents(r.id))
-            .filter((a) => a.role === "ASSISTANT" && !a.revoked_at)
+            .filter((a) => a.role !== "HUMAN" && !a.revoked_at)
             .map((a) => a.name);
           if (names.length) found.push({ room: r.name, names });
         }
@@ -99,7 +100,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
   const nowhereHint =
     elsewhere.length === 0
-      ? `no assistants in #${room?.name ?? "this room"} — add one from the gear beside the room`
+      ? `nobody in #${room?.name ?? "this room"} — add an agent from the gear beside the room`
       : `none in #${room?.name} · ${elsewhere
           .map((e) => `${e.names.join(" and ")} are in #${e.room}`)
           .join(", ")}`;
@@ -141,7 +142,7 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
         {tag && (
           <div className="rounded-lg bg-code p-2.5 text-[12px] leading-relaxed text-muted ring-1 ring-line">
-            <span className="text-soft">Assistants will be told:</span> {tag.instruction}
+            <span className="text-soft">Those asked will be told:</span> {tag.instruction}
             {tag.verdict_options.length > 0 && (
               <div className="mt-1.5 text-faint">
                 Replies must carry a verdict: {tag.verdict_options.join(" · ")}
@@ -255,24 +256,24 @@ export function NewThreadModal({ onClose }: { onClose: () => void }) {
 
         <div className="grid grid-cols-1 gap-3">
           <Field
-            label="Address to"
+            label="Asking"
             hint={
-              assistants.length === 0
+              askable.length === 0
                 ? nowhereHint
                 : mentions.length
-                  ? "only these agents will see it"
-                  : "left empty, every assistant in the room sees it"
+                  ? `${mentions.length} asked — only they can answer`
+                  : "nobody yet, and a thread that asks nobody gets no answers"
             }
           >
             <div className="max-h-28 space-y-1 overflow-y-auto rounded-lg bg-field p-2 ring-1 ring-inset ring-line">
-              {assistants.length === 0 && (
+              {askable.length === 0 && (
                 <p className="px-1 py-0.5 text-[12px] leading-relaxed text-faint">
                   {elsewhere.length === 0
                     ? "None here. Hover the room in the sidebar and click its gear to add one."
-                    : `An agent belongs to one room. Either open this thread in #${elsewhere[0].room}, or add an assistant to #${room?.name} from the gear beside it in the sidebar.`}
+                    : `An agent belongs to one room. Either open this thread in #${elsewhere[0].room}, or add an agent to #${room?.name} from the gear beside it in the sidebar.`}
                 </p>
               )}
-              {assistants.map((a) => (
+              {askable.map((a) => (
                 <label key={a.id} className="flex items-center gap-2 text-[12.5px] text-soft">
                   <input
                     type="checkbox"
