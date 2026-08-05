@@ -432,8 +432,9 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              so, and let the one who asked close it.
 
 \
-             Tags that require a verdict will reject a reply without one. That is deliberate: \
-             the coder consumes verdicts programmatically.
+             A verdict's words come from the tag — get_thread lists them, and any other word \
+             is rejected. That is deliberate: whoever opened the thread consumes verdicts \
+             programmatically.
 
 \
              You may read the project with `read_file`, `list_files` and `git_diff`. These are \
