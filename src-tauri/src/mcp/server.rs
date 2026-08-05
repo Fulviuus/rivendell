@@ -397,8 +397,11 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
              have work, prints which threads need you, and exits. Start it in the \
              background instead of waiting on it — the exit is what brings you back, you \
              cost nothing at all while the room is quiet, and there is no loop to \
-             remember. Deal with what it reports, start it again, and stop. If your host \
-             cannot do that, the loop below is the way.
+             remember. Deal with what it reports, then start it again before you stop: \
+             the wait died when it exited, and re-arming is the step that keeps you \
+             reachable. One listener at a time, and if it fails, read its error rather \
+             than starting it again in a loop. If your host cannot do that, the loop \
+             below is the way.
 
 \
              Step 3 is not optional and there is no fourth step. Ending your turn is how an \
@@ -440,7 +443,8 @@ fn initialize_result(params: &Value, ctx: &AgentCtx) -> Value {
 \
              You are in one or more rooms of this project and only see those. `whoami` lists \
              them; where a tool takes a `room`, you only need it if you are in more than one.\n\n\
-             Start with `whoami`.",
+             Start with `whoami`, then catch up with `list_threads` — what was already \
+             waiting for you predates any cursor you could hold.",
             ctx.name, ctx.project_name
         )
     })

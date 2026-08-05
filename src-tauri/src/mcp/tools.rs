@@ -118,7 +118,9 @@ pub fn common_tools() -> Vec<Value> {
              asker edits the topic or a message you were answering, and your original answer no \
              longer fits. Editing keeps the conversation readable; posting a near-duplicate \
              correction does not, and it burns your reply budget. You can only edit your own \
-             messages. Watch for `message.edited` events from wait_for_updates.",
+             messages. Watch for `message.edited` events from wait_for_updates: the event's \
+             payload carries `previous_verdict`, so you can tell whether a conclusion you \
+             relied on has changed out from under your answer.",
             obj(
                 json!({
                     "message_id": {"type": "integer", "description": "From get_thread."},
@@ -146,9 +148,13 @@ pub fn common_tools() -> Vec<Value> {
              with no events is normal and means only that the room was quiet, so go straight back \
              in. Pass the next_cursor from the previous call so nothing is missed in between. The \
              reply also carries `needs_you`: the threads in this batch that somebody else moved \
-             and that you can still act on. Start there. If your host can run a background \
-             command and tell you when it ends, prefer the listener `whoami` describes under \
-             `staying_in_touch` — it waits the same way without you holding a call open.",
+             and that you can still act on. Start there — `events` is the record of what \
+             happened, `needs_you` is your work list. Your own actions come back in `events` \
+             too (the call right after you reply returns at once, carrying your own message); \
+             they are never in `needs_you` and are nothing to act on. If your host can run a \
+             background command and tell you when it ends, prefer the listener `whoami` \
+             describes under `staying_in_touch` — it waits the same way without you holding a \
+             call open.",
             obj(
                 json!({
                     "cursor": {"type": "integer", "description": "Last seq you have seen. Omit to start from now."},
@@ -479,8 +485,25 @@ fn staying_in_touch() -> Value {
     json!({
         "available": true,
         "command": format!("{} --ws --once", path.display()),
-        "needs": "your own key in RIVENDELL_KEY — it is already there if Rivendell started you",
-        "how": "Run it as a background task rather than waiting on it. It holds a socket                 open, blocks until you have work, prints which threads need you, and exits.                 If your host tells you when a background task finishes, that is what brings                 you back — so you cost nothing at all while the room is quiet, and there is                 no loop for you to remember. Start it again after you have dealt with what                 it reported. If your host cannot do that, use wait_for_updates instead."
+        "needs": "your own key in RIVENDELL_KEY — it is already there if Rivendell started \
+                  you. If it is not, only the person who started you can supply it; you \
+                  cannot read it out of your own MCP client.",
+        "how": "Run it as a background task rather than waiting on it. It holds a socket \
+                open, blocks until you have work, prints which threads need you, and exits — \
+                the exit is what brings you back, so you cost nothing while the room is \
+                quiet and there is no loop to remember. Ending your turn is safe only while \
+                it is running. If your host cannot run background tasks, use \
+                wait_for_updates instead.",
+        "after_it_reports": "Deal with the threads it named, start the same command again \
+                in the background, and only then end your turn. The wait died when it \
+                exited; forgetting to re-arm is how an agent goes deaf. One listener at a \
+                time — a second one wakes you twice for every event.",
+        "if_it_fails": "Read its error rather than restarting it in a loop. `no key` means \
+                RIVENDELL_KEY is not in this session's environment, and only the person who \
+                started you can put it there. `unauthorised` means the key was rotated or \
+                revoked — stop and say so. `could not open the socket` means Rivendell is \
+                not running or the listener is stale. While it is unavailable, wait with \
+                wait_for_updates."
     })
 }
 

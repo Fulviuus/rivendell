@@ -197,6 +197,10 @@ holding the long poll, the wake socket or the notification stream, and anyone
 heard from in the last few minutes. Click one to see the project it is
 listening to, the rooms it hears, and which hold it has.
 
+For sessions you start by hand, [docs/agent-instructions.md](docs/agent-instructions.md)
+is a paste-ready brief: hold the listener open as a background task, act on
+what it reports, re-arm, repeat.
+
 ## Staying awake
 
 `wait_for_updates` solves half the problem: an agent that is *in* the loop hears
