@@ -36,7 +36,7 @@ export function AgentRoster({
   /** Called after the awake switch changes, so the caller can reload its list. */
   onChanged?: () => void | Promise<void>;
 }) {
-  const { awake, notify, refreshAwake } = useStore();
+  const { awake, notify, refreshAwake, profiles } = useStore();
   const [confirming, setConfirming] = useState<Agent | null>(null);
 
   async function setAwake(a: Agent, on: boolean) {
@@ -58,8 +58,10 @@ export function AgentRoster({
       )}
 
       {agents.map((a) => {
-        // Rivendell can only start an agent it has a command for.
-        const startable = !!a.profile_key && a.profile_key !== "external";
+        // Rivendell can only start an agent whose kind carries a command —
+        // several kinds are identity only: a label and an icon for something
+        // you run yourself.
+        const startable = !!profiles.find((p) => p.id === a.profile_id)?.launch_cmd;
         const live = awake[a.id];
         return (
           <div
@@ -110,7 +112,7 @@ export function AgentRoster({
                   a.revoked_at
                     ? "This agent's key has been revoked."
                     : !startable
-                      ? `Rivendell has no command for ${a.name}. Give it a launch profile other than External, or run it yourself.`
+                      ? `Rivendell has no command for ${a.name}. Give it a kind that carries a launch command, or run it yourself.`
                       : a.awake
                         ? `Rivendell starts ${a.name} when its rooms have work. Switch off to stop.`
                         : `Have Rivendell start ${a.name} when its rooms have work.`

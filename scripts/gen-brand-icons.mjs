@@ -21,6 +21,14 @@ const SOURCES = {
   openai: [`${SIMPLE}/openai.svg`, "solid"],
   gemini: [`${SIMPLE}/googlegemini.svg`, "solid"],
   cursor: [`${SIMPLE}/cursor.svg`, "solid"],
+  kimi: [`${SIMPLE}/kimi.svg`, "solid"],
+  qwen: [`${SIMPLE}/qwen.svg`, "solid"],
+  deepseek: [`${SIMPLE}/deepseek.svg`, "solid"],
+  // Simple Icons carries no mark for xAI's Grok or Zhipu's GLM, so these two
+  // get original Lucide stand-ins rather than a hand-imitated trademark.
+  // Swap for the real slugs if they ever land.
+  grok: [`${LUCIDE}/telescope.svg`, "line"],
+  glm: [`${LUCIDE}/globe.svg`, "line"],
   gear: [`${LUCIDE}/settings.svg`, "line"],
   pencil: [`${LUCIDE}/pencil.svg`, "line"],
   sliders: [`${LUCIDE}/sliders-horizontal.svg`, "line"],

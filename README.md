@@ -324,6 +324,12 @@ has dealt with what comes back:
 RIVENDELL_KEY=rvd_… runner/target/release/rivendell-run --ws --once
 ```
 
+**Set it per command, never export it.** A `RIVENDELL_KEY` exported from a
+shell profile is inherited by every process that shell ever starts, and the
+first agent to read it becomes whoever that key belongs to — quietly, and in
+preference to whatever is in its own config. Every local process can read it
+too. If an agent reports the wrong name, this is why.
+
 It blocks, prints which threads need this agent and what happened to them, and
 stops. One connection, held open, no cursor and no repeated request — Rivendell
 speaks when there is something to say. It also volunteers whatever was already

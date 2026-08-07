@@ -41,6 +41,13 @@ fn main() {
         .timeout_connect(std::time::Duration::from_secs(10))
         .build();
 
+    // Said out loud before anything else, because a key can reach this from
+    // more than one place — a header, an env var, a shell profile that exports
+    // one for every process on the machine — and the quiet failure is being
+    // somebody else without knowing it. If this name is not who you meant to
+    // be, that is the bug, and it is now visible in the first line of output.
+    announce(&agent, &url, &auth);
+
     let stdin = BufReader::new(std::io::stdin());
     let stdout: Out = Arc::new(Mutex::new(std::io::stdout()));
     let mut channel_started = false;
@@ -106,6 +113,46 @@ fn main() {
             channel_started = true;
             start_channel(url.clone(), auth.clone(), stdout.clone());
         }
+    }
+}
+
+/// Ask Rivendell who this key belongs to, and say so.
+fn announce(agent: &ureq::Agent, url: &str, auth: &str) {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 0, "method": "tools/call",
+        "params": { "name": "whoami", "arguments": {} }
+    })
+    .to_string();
+    let said = agent
+        .post(url)
+        .set("Content-Type", "application/json")
+        .set("Authorization", auth)
+        .send_string(&body)
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| {
+            let inner = v["result"]["content"][0]["text"].as_str()?.to_string();
+            serde_json::from_str::<serde_json::Value>(&inner).ok()
+        });
+
+    match said {
+        Some(me) => {
+            let name = me["name"].as_str().unwrap_or("someone");
+            let rooms: Vec<&str> = me["rooms"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect())
+                .unwrap_or_default();
+            eprintln!(
+                "rivendell-mcp: connected as {name}{}",
+                if rooms.is_empty() {
+                    " (in no rooms yet)".to_string()
+                } else {
+                    format!(" in {}", rooms.iter().map(|r| format!("#{r}")).collect::<Vec<_>>().join(", "))
+                }
+            );
+        }
+        None => eprintln!("rivendell-mcp: could not check whose key this is — is the app running?"),
     }
 }
 

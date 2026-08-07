@@ -1139,8 +1139,8 @@ impl Store {
         };
         if cmd.trim().is_empty() || key == "external" {
             return Err(Error::Invalid(format!(
-                "Rivendell does not know how to start {name}. Give it a launch profile other \
-                 than External, or run it yourself."
+                "Rivendell does not know how to start {name}. Give it a kind that carries a \
+                 launch command, or run it yourself."
             )));
         }
         let args: Vec<String> = serde_json::from_str(&args_json)
